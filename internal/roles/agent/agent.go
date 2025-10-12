@@ -185,7 +185,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 				for i := range topCount {
 					p := &procStats[i]
 					// Get CPU %
-					if cpuPct, err := p.proc.Percent(100 * time.Millisecond); err == nil {
+					if cpuPct, err := p.proc.Percent(0); err == nil {
 						p.cpuPct = float32(cpuPct)
 					}
 					// Get info for top procs
