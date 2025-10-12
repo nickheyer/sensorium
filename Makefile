@@ -24,10 +24,10 @@ dev:
 		docker compose -f docker-compose.pulsar.yml up -d && \
 		sleep 3 && \
 		SENSORIUM_ROLES=agent,detector,alerter,ui \
-		PULSAR_URL=pulsar://localhost:6650 \
-		NODE_ID=$$(hostname) \
-		SAMPLE_PERIOD=2s \
-		HTTP_ADDR=:8088 \
+		SENSORIUM_PULSAR_URL=pulsar://localhost:6650 \
+		SENSORIUM_NODE_ID=$$(hostname) \
+		SENSORIUM_SAMPLE_PERIOD=2s \
+		SENSORIUM_HTTP_ADDR=:8088 \
 		go run ./cmd'
 
 pulsar-up:
