@@ -5,35 +5,41 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"time"
 
+	"sensorium/internal/config"
 	sensorpb "sensorium/internal/proto"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"google.golang.org/protobuf/proto"
 )
 
-type Config struct {
-	SubName  string
-	InTopic  string
-	OutTopic string
-	Cooldown time.Duration
-}
+func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
+	log.Printf("Alerter starting - In: %s, Out: %s, Cooldown: %v",
+		cfg.Alerter.InTopic, cfg.Alerter.OutTopic, cfg.Alerter.Cooldown)
 
-func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 	cons, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic: cfg.InTopic, SubscriptionName: cfg.SubName, Type: pulsar.Shared,
+		Topic:            cfg.Alerter.InTopic,
+		SubscriptionName: cfg.Alerter.SubName,
+		Type:             pulsar.Shared,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to subscribe: %w", err)
 	}
 	defer cons.Close()
 
-	prod, err := client.CreateProducer(pulsar.ProducerOptions{Topic: cfg.OutTopic})
+	log.Printf("Alerter subscribed to %s", cfg.Alerter.InTopic)
+
+	prod, err := client.CreateProducer(pulsar.ProducerOptions{
+		Topic: cfg.Alerter.OutTopic,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create producer: %w", err)
 	}
 	defer prod.Close()
+
+	log.Printf("Alerter producer created for %s", cfg.Alerter.OutTopic)
 
 	last := map[string]time.Time{} // key: node.kind -> last sent
 
@@ -49,7 +55,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 		}
 		k := ev.NodeId + "|" + ev.Kind
 		now := time.Now()
-		if t, ok := last[k]; ok && now.Sub(t) < cfg.Cooldown {
+		if t, ok := last[k]; ok && now.Sub(t) < cfg.Alerter.Cooldown {
 			cons.Ack(msg)
 			continue
 		}
@@ -64,7 +70,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 			Key: ev.NodeId, Payload: b,
 		})
 		cons.Ack(msg)
-		fmt.Printf("Pulsar alerter sent producer-message w/ ID: %d\n", msgID)
+		log.Printf("Alerter emitted alert: %s for %s/%s, MsgID: %v", al.Id, ev.NodeId, ev.Kind, msgID)
 	}
 }
 

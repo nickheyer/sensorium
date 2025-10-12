@@ -3,34 +3,34 @@ package agent
 import (
 	"context"
 	"fmt"
-	"time"
+	"log"
 
+	"sensorium/internal/config"
 	sensorpb "sensorium/internal/proto"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
 	"google.golang.org/protobuf/proto"
+	"time"
 )
 
-type Config struct {
-	NodeID string
-	Topic  string
-	Sample time.Duration
-}
+func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
+	log.Printf("Agent starting with NodeID: %s, Topic: %s", cfg.Agent.NodeID, cfg.Agent.Topic)
 
-func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 	prod, err := client.CreateProducer(pulsar.ProducerOptions{
-		Topic:           cfg.Topic,
+		Topic:           cfg.Agent.Topic,
 		DisableBatching: false,
 		CompressionType: pulsar.LZ4,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create producer: %w", err)
 	}
 	defer prod.Close()
 
-	t := time.NewTicker(cfg.Sample)
+	log.Printf("Agent producer created successfully")
+
+	t := time.NewTicker(cfg.Agent.SamplePeriod)
 	defer t.Stop()
 
 	for {
@@ -45,7 +45,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 			vm, _ := mem.VirtualMemory()
 
 			m := &sensorpb.MetricFrame{
-				NodeId:      cfg.NodeID,
+				NodeId:      cfg.Agent.NodeID,
 				TsMs:        time.Now().UnixMilli(),
 				CpuUsagePct: float32(cpuPct),
 				CpuTempC:    0, // left for later (IPMI/ACPI integration)
@@ -56,11 +56,12 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 			}
 			b, _ := proto.Marshal(m)
 			msgID, _ := prod.Send(ctx, &pulsar.ProducerMessage{
-				Key:     cfg.NodeID,
+				Key:     cfg.Agent.NodeID,
 				Payload: b,
 			})
 
-			fmt.Printf("Pulsar agent sent producer-message w/ ID: %d\n", msgID)
+			log.Printf("Agent sent metrics - CPU: %.1f%%, Mem: %d/%d, MsgID: %v",
+				cpuPct, m.MemUsed, m.MemTotal, msgID)
 		}
 	}
 }

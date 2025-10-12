@@ -3,44 +3,47 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
 
+	"sensorium/internal/config"
 	sensorpb "sensorium/internal/proto"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"google.golang.org/protobuf/proto"
 )
 
-type Config struct {
-	Addr         string
-	AlertsTopic  string
-	MetricsTopic string // optional: subscribe to show latest per node
-	SubPrefix    string
-}
+func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
+	log.Printf("UI starting on %s", cfg.UI.HTTPAddr)
 
-func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 	// Subscribe alerts
 	alertSub, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.AlertsTopic,
-		SubscriptionName: cfg.SubPrefix + "-ui-alerts",
+		Topic:            cfg.UI.AlertsTopic,
+		SubscriptionName: cfg.UI.SubPrefix + "-ui-alerts",
 		Type:             pulsar.Shared,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to subscribe to alerts: %w", err)
 	}
+	defer alertSub.Close()
+
+	log.Printf("UI subscribed to alerts topic: %s", cfg.UI.AlertsTopic)
 
 	// Subscribe metrics (latest per node)
 	metricSub, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.MetricsTopic,
-		SubscriptionName: cfg.SubPrefix + "-ui-metrics",
+		Topic:            cfg.UI.MetricsTopic,
+		SubscriptionName: cfg.UI.SubPrefix + "-ui-metrics",
 		Type:             pulsar.KeyShared,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to subscribe to metrics: %w", err)
 	}
+	defer metricSub.Close()
+
+	log.Printf("UI subscribed to metrics topic: %s", cfg.UI.MetricsTopic)
 
 	var (
 		mu           sync.RWMutex
@@ -50,10 +53,13 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 
 	// Alerts consumer goroutine
 	go func() {
-		defer alertSub.Close()
 		for {
 			msg, err := alertSub.Receive(ctx)
 			if err != nil {
+				if ctx.Err() != nil {
+					return // Context canceled
+				}
+				log.Printf("UI alerts consumer error: %v", err)
 				return
 			}
 			var al sensorpb.Alert
@@ -65,6 +71,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 					recentAlerts = recentAlerts[len(recentAlerts)-50:]
 				}
 				mu.Unlock()
+				log.Printf("UI received alert: %s", al.Id)
 			}
 			alertSub.Ack(msg)
 		}
@@ -72,17 +79,20 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 
 	// Metrics consumer goroutine
 	go func() {
-		defer metricSub.Close()
 		for {
 			msg, err := metricSub.Receive(ctx)
 			if err != nil {
+				if ctx.Err() != nil {
+					return // Context canceled
+				}
+				log.Printf("UI metrics consumer error: %v", err)
 				return
 			}
 			var mf sensorpb.MetricFrame
 			if err := proto.Unmarshal(msg.Payload(), &mf); err == nil {
 				mu.Lock()
-				defer mu.Unlock()
 				latestByNode[mf.NodeId] = &mf
+				mu.Unlock()
 			}
 			metricSub.Ack(msg)
 		}
@@ -109,7 +119,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].node < rows[j].node })
 
-		fmt.Fprintf(w, "SENSORIUM UI (plaintext)\n\n")
+		fmt.Fprintf(w, "SENSORIUM METRICS\n\n")
 		fmt.Fprintf(w, "Nodes (%d):\n", len(rows))
 		for _, r := range rows {
 			fmt.Fprintf(w, "  - %s | CPU: %5.1f%% | MEM: %5.1f%% | last: %s\n",
@@ -125,10 +135,15 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 		}
 	})
 
-	srv := &http.Server{Addr: cfg.Addr}
+	srv := &http.Server{Addr: cfg.UI.HTTPAddr}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
 	}()
-	return srv.ListenAndServe()
+
+	log.Printf("UI HTTP server listening on %s", cfg.UI.HTTPAddr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("HTTP server error: %w", err)
+	}
+	return nil
 }

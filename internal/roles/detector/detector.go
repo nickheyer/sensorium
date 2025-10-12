@@ -3,46 +3,44 @@ package detector
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
+	"sensorium/internal/config"
 	sensorpb "sensorium/internal/proto"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"google.golang.org/protobuf/proto"
 )
 
-type Config struct {
-	SubName  string
-	InTopic  string
-	OutTopic string
-	CPUWarn  float32 // e.g., 85
-	CPUCrit  float32 // e.g., 92
-	MemWarn  float32 // e.g., 0.90 (90% of total)
-	MemCrit  float32 // e.g., 0.95
-}
+func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
+	log.Printf("Detector starting - In: %s, Out: %s", cfg.Detector.InTopic, cfg.Detector.OutTopic)
 
-func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 	cons, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.InTopic,
-		SubscriptionName: cfg.SubName,
+		Topic:            cfg.Detector.InTopic,
+		SubscriptionName: cfg.Detector.SubName,
 		Type:             pulsar.KeyShared,
 		DLQ: &pulsar.DLQPolicy{
 			MaxDeliveries:   5,
-			DeadLetterTopic: cfg.InTopic + ".DLQ",
+			DeadLetterTopic: cfg.Detector.InTopic + ".DLQ",
 		},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to subscribe: %w", err)
 	}
 	defer cons.Close()
 
+	log.Printf("Detector subscribed to %s", cfg.Detector.InTopic)
+
 	prod, err := client.CreateProducer(pulsar.ProducerOptions{
-		Topic: cfg.OutTopic,
+		Topic: cfg.Detector.OutTopic,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create producer: %w", err)
 	}
 	defer prod.Close()
+
+	log.Printf("Detector producer created for %s", cfg.Detector.OutTopic)
 
 	for {
 		msg, err := cons.Receive(ctx)
@@ -56,9 +54,9 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 		}
 
 		// CPU check
-		if mf.CpuUsagePct >= cfg.CPUWarn {
+		if mf.CpuUsagePct >= cfg.Detector.CPUWarn {
 			sev := "warn"
-			if mf.CpuUsagePct >= cfg.CPUCrit {
+			if mf.CpuUsagePct >= cfg.Detector.CPUCrit {
 				sev = "crit"
 			}
 			ev := &sensorpb.HealthEvent{
@@ -74,9 +72,9 @@ func Run(ctx context.Context, client pulsar.Client, cfg Config) error {
 		// Memory check
 		if mf.MemTotal > 0 {
 			ratio := float32(mf.MemUsed) / float32(mf.MemTotal)
-			if ratio >= cfg.MemWarn {
+			if ratio >= cfg.Detector.MemWarn {
 				sev := "warn"
-				if ratio >= cfg.MemCrit {
+				if ratio >= cfg.Detector.MemCrit {
 					sev = "crit"
 				}
 				ev := &sensorpb.HealthEvent{
@@ -99,5 +97,5 @@ func emit(ctx context.Context, prod pulsar.Producer, key string, ev *sensorpb.He
 	msgID, _ := prod.Send(ctx, &pulsar.ProducerMessage{
 		Key: key, Payload: b,
 	})
-	fmt.Printf("Pulsar detector sent producer-message w/ ID: %d\n", msgID)
+	log.Printf("Detector emitted event: %s/%s/%s, MsgID: %v", ev.NodeId, ev.Kind, ev.Severity, msgID)
 }
