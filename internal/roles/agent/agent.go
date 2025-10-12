@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"runtime"
-	"sort"
 	"strings"
 
 	"sensorium/internal/config"
@@ -14,13 +13,11 @@ import (
 	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
-	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/load"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
-	"github.com/shirou/gopsutil/v4/process"
 	"github.com/shirou/gopsutil/v4/sensors"
 	"google.golang.org/protobuf/proto"
 )
@@ -58,37 +55,37 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 				TsMs:   time.Now().UnixMilli(),
 			}
 
-			// CPU %
-			if cpuPcts, err := cpu.Percent(0, false); err == nil && len(cpuPcts) > 0 {
-				m.CpuUsagePct = float32(cpuPcts[0])
-			}
+			// // CPU %
+			// if cpuPcts, err := cpu.Percent(0, false); err == nil && len(cpuPcts) > 0 {
+			// 	m.CpuUsagePct = float32(cpuPcts[0])
+			// }
 
-			// Per-core usage
-			if coresPcts, err := cpu.Percent(0, true); err == nil {
-				m.CpuCorePcts = make([]float32, len(coresPcts))
-				for i, pct := range coresPcts {
-					m.CpuCorePcts[i] = float32(pct)
-				}
-			}
+			// // Per-core usage
+			// if coresPcts, err := cpu.Percent(0, true); err == nil {
+			// 	m.CpuCorePcts = make([]float32, len(coresPcts))
+			// 	for i, pct := range coresPcts {
+			// 		m.CpuCorePcts[i] = float32(pct)
+			// 	}
+			// }
 
-			// CPU hz
-			if cpuInfos, err := cpu.Info(); err == nil {
-				m.CpuFreqsMhz = make([]uint64, len(cpuInfos))
-				for i, info := range cpuInfos {
-					m.CpuFreqsMhz[i] = uint64(info.Mhz)
-				}
-				if len(cpuInfos) > 0 {
-					m.CpuModel = cpuInfos[0].ModelName
-				}
-			}
+			// // CPU hz
+			// if cpuInfos, err := cpu.Info(); err == nil {
+			// 	m.CpuFreqsMhz = make([]uint64, len(cpuInfos))
+			// 	for i, info := range cpuInfos {
+			// 		m.CpuFreqsMhz[i] = uint64(info.Mhz)
+			// 	}
+			// 	if len(cpuInfos) > 0 {
+			// 		m.CpuModel = cpuInfos[0].ModelName
+			// 	}
+			// }
 
-			// CPU counts
-			if logical, err := cpu.Counts(true); err == nil {
-				m.CpuCountLogical = uint32(logical)
-			}
-			if physical, err := cpu.Counts(false); err == nil {
-				m.CpuCountPhysical = uint32(physical)
-			}
+			// // CPU counts
+			// if logical, err := cpu.Counts(true); err == nil {
+			// 	m.CpuCountLogical = uint32(logical)
+			// }
+			// if physical, err := cpu.Counts(false); err == nil {
+			// 	m.CpuCountPhysical = uint32(physical)
+			// }
 
 			// Load avg
 			if loadAvg, err := load.Avg(); err == nil {
@@ -97,93 +94,93 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 				m.LoadAvg_15M = float32(loadAvg.Load15)
 			}
 
-			// Proc/thread ct
-			if procs, err := process.Processes(); err == nil {
-				m.ProcessCount = uint32(len(procs))
+			// // Proc/thread ct
+			// if procs, err := process.Processes(); err == nil {
+			// 	m.ProcessCount = uint32(len(procs))
 
-				type procStat struct {
-					proc    *process.Process
-					cpuPct  float32
-					memPct  float32
-					memRss  uint64
-					memVms  uint64
-					name    string
-					user    string
-					created int64
-				}
+			// 	type procStat struct {
+			// 		proc    *process.Process
+			// 		cpuPct  float32
+			// 		memPct  float32
+			// 		memRss  uint64
+			// 		memVms  uint64
+			// 		name    string
+			// 		user    string
+			// 		created int64
+			// 	}
 
-				procStats := make([]procStat, 0, len(procs))
-				for _, p := range procs {
-					stat := procStat{proc: p}
+			// 	procStats := make([]procStat, 0, len(procs))
+			// 	for _, p := range procs {
+			// 		stat := procStat{proc: p}
 
-					if cpuPct, err := p.CPUPercent(); err == nil {
-						stat.cpuPct = float32(cpuPct)
-					}
-					if memPct, err := p.MemoryPercent(); err == nil {
-						stat.memPct = memPct
-					}
-					if memInfo, err := p.MemoryInfo(); err == nil {
-						stat.memRss = memInfo.RSS
-						stat.memVms = memInfo.VMS
-					}
-					if name, err := p.Name(); err == nil {
-						stat.name = name
-					}
-					if user, err := p.Username(); err == nil {
-						stat.user = user
-					}
-					if created, err := p.CreateTime(); err == nil {
-						stat.created = created
-					}
+			// 		if cpuPct, err := p.CPUPercent(); err == nil {
+			// 			stat.cpuPct = float32(cpuPct)
+			// 		}
+			// 		if memPct, err := p.MemoryPercent(); err == nil {
+			// 			stat.memPct = memPct
+			// 		}
+			// 		if memInfo, err := p.MemoryInfo(); err == nil {
+			// 			stat.memRss = memInfo.RSS
+			// 			stat.memVms = memInfo.VMS
+			// 		}
+			// 		if name, err := p.Name(); err == nil {
+			// 			stat.name = name
+			// 		}
+			// 		if user, err := p.Username(); err == nil {
+			// 			stat.user = user
+			// 		}
+			// 		if created, err := p.CreateTime(); err == nil {
+			// 			stat.created = created
+			// 		}
 
-					procStats = append(procStats, stat)
-				}
+			// 		procStats = append(procStats, stat)
+			// 	}
 
-				// Top 5 procs by CPU %
-				sort.Slice(procStats, func(i, j int) bool {
-					return procStats[i].cpuPct > procStats[j].cpuPct
-				})
-				for i := 0; i < 5 && i < len(procStats); i++ {
-					p := &procStats[i]
-					m.TopCpuProcs = append(m.TopCpuProcs, &sensorpb.MetricFrame_ProcessInfo{
-						Pid:        p.proc.Pid,
-						Name:       p.name,
-						CpuPct:     p.cpuPct,
-						MemPct:     p.memPct,
-						MemRss:     p.memRss,
-						MemVms:     p.memVms,
-						CreateTime: p.created,
-						Username:   p.user,
-					})
-				}
+			// 	// Top 5 procs by CPU %
+			// 	sort.Slice(procStats, func(i, j int) bool {
+			// 		return procStats[i].cpuPct > procStats[j].cpuPct
+			// 	})
+			// 	for i := 0; i < 5 && i < len(procStats); i++ {
+			// 		p := &procStats[i]
+			// 		m.TopCpuProcs = append(m.TopCpuProcs, &sensorpb.MetricFrame_ProcessInfo{
+			// 			Pid:        p.proc.Pid,
+			// 			Name:       p.name,
+			// 			CpuPct:     p.cpuPct,
+			// 			MemPct:     p.memPct,
+			// 			MemRss:     p.memRss,
+			// 			MemVms:     p.memVms,
+			// 			CreateTime: p.created,
+			// 			Username:   p.user,
+			// 		})
+			// 	}
 
-				// Top 5 procs by mem
-				sort.Slice(procStats, func(i, j int) bool {
-					return procStats[i].memPct > procStats[j].memPct
-				})
-				for i := 0; i < 5 && i < len(procStats); i++ {
-					p := &procStats[i]
-					m.TopMemProcs = append(m.TopMemProcs, &sensorpb.MetricFrame_ProcessInfo{
-						Pid:        p.proc.Pid,
-						Name:       p.name,
-						CpuPct:     p.cpuPct,
-						MemPct:     p.memPct,
-						MemRss:     p.memRss,
-						MemVms:     p.memVms,
-						CreateTime: p.created,
-						Username:   p.user,
-					})
-				}
+			// 	// Top 5 procs by mem
+			// 	sort.Slice(procStats, func(i, j int) bool {
+			// 		return procStats[i].memPct > procStats[j].memPct
+			// 	})
+			// 	for i := 0; i < 5 && i < len(procStats); i++ {
+			// 		p := &procStats[i]
+			// 		m.TopMemProcs = append(m.TopMemProcs, &sensorpb.MetricFrame_ProcessInfo{
+			// 			Pid:        p.proc.Pid,
+			// 			Name:       p.name,
+			// 			CpuPct:     p.cpuPct,
+			// 			MemPct:     p.memPct,
+			// 			MemRss:     p.memRss,
+			// 			MemVms:     p.memVms,
+			// 			CreateTime: p.created,
+			// 			Username:   p.user,
+			// 		})
+			// 	}
 
-				// Count threads
-				threadCount := 0
-				for _, p := range procs {
-					if threads, err := p.NumThreads(); err == nil {
-						threadCount += int(threads)
-					}
-				}
-				m.ThreadCount = uint32(threadCount)
-			}
+			// 	// Count threads
+			// 	threadCount := 0
+			// 	for _, p := range procs {
+			// 		if threads, err := p.NumThreads(); err == nil {
+			// 			threadCount += int(threads)
+			// 		}
+			// 	}
+			// 	m.ThreadCount = uint32(threadCount)
+			// }
 
 			// Memory
 			if vm, err := mem.VirtualMemory(); err == nil {
