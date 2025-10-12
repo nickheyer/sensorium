@@ -47,6 +47,8 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 	var prevNetStats map[string]net.IOCountersStat
 	var prevTime time.Time
 
+	process.EnableBootTimeCache(true) // Enabling this because of some random mentions on github.
+
 	for {
 		select {
 		case <-ctx.Done():
