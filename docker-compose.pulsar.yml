@@ -1,0 +1,8 @@
+services:
+  pulsar:
+    image: apachepulsar/pulsar:latest
+    command: ["bin/pulsar", "standalone", "-nss"]
+    ports:
+      - "6650:6650"   # binary protocol
+      - "8080:8080"   # admin/HTTP
+    restart: unless-stopped

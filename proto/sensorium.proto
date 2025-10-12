@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package sensorium;
+
+option go_package = "internal/proto;sensorpb";
+
+message MetricFrame {
+  string node_id = 1;
+  int64 ts_ms = 2;
+
+  // Simplified POC: average CPU and temp (if known).
+  float cpu_usage_pct = 3; // 0..100
+  float cpu_temp_c = 4; // optional; 0 means unknown
+
+  uint64 mem_used = 5;
+  uint64 mem_total = 6;
+}
+
+message HealthEvent {
+  string node_id = 1;
+  int64 ts_ms = 2;
+  string kind = 3; // "cpu_hot" | "mem_high"
+  string severity = 4; // "info" | "warn" | "crit"
+  string detail = 5;
+}
+
+message Alert {
+  string id = 1; // e.g., hash(node_id+kind) or generated uuid
+  HealthEvent event = 2;
+}
