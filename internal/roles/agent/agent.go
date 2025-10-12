@@ -48,6 +48,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 	var prevTime time.Time
 
 	process.EnableBootTimeCache(true) // Enabling this because of some random mentions on github.
+	// Edit: For once this actually worked, keep it
 
 	for {
 		select {
