@@ -43,7 +43,8 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 	t := time.NewTicker(cfg.SamplePeriod)
 	defer t.Stop()
 
-	// Cache for net ifaces
+	// Cache stats
+	var prevCPUTimes []cpu.TimesStat
 	var prevNetStats map[string]net.IOCountersStat
 	var prevTime time.Time
 
@@ -59,17 +60,47 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 			}
 
 			// CPU %
-			if cpuPcts, err := cpu.Percent(0, false); err == nil && len(cpuPcts) > 0 {
-				m.CpuUsagePct = float32(cpuPcts[0])
+			currentCPUTimes, err := cpu.Times(true)
+			if err == nil && prevCPUTimes != nil {
+				// Overall %
+				var totalDelta, idleDelta float64
+
+				// Per core % slice
+				m.CpuCorePcts = make([]float32, len(currentCPUTimes))
+
+				for i, curr := range currentCPUTimes {
+					if i < len(prevCPUTimes) {
+						prev := prevCPUTimes[i]
+						total := (curr.User - prev.User) + (curr.System - prev.System) +
+							(curr.Idle - prev.Idle) + (curr.Nice - prev.Nice) +
+							(curr.Iowait - prev.Iowait) + (curr.Irq - prev.Irq) +
+							(curr.Softirq - prev.Softirq) + (curr.Steal - prev.Steal)
+						idle := curr.Idle - prev.Idle
+
+						totalDelta += total
+						idleDelta += idle
+
+						// Per-core %
+						if total > 0 {
+							usage := 100.0 * (1.0 - idle/total)
+							if i < len(m.CpuCorePcts) {
+								m.CpuCorePcts[i] = float32(usage)
+							}
+						}
+					}
+				}
+
+				// Overall %
+				if totalDelta > 0 {
+					m.CpuUsagePct = float32(100.0 * (1.0 - idleDelta/totalDelta))
+				}
+			} else if err == nil {
+				// First pass: just times - no calc
+				m.CpuCorePcts = make([]float32, len(currentCPUTimes))
 			}
 
-			// Per-core usage
-			if coresPcts, err := cpu.Percent(0, true); err == nil {
-				m.CpuCorePcts = make([]float32, len(coresPcts))
-				for i, pct := range coresPcts {
-					m.CpuCorePcts[i] = float32(pct)
-				}
-			}
+			// Update cache for next pass
+			prevCPUTimes = currentCPUTimes
 
 			// CPU hz
 			if cpuInfos, err := cpu.Info(); err == nil {
