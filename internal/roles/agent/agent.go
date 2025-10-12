@@ -7,20 +7,70 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"sensorium/internal/config"
 	sensorpb "sensorium/internal/proto"
 
 	"github.com/apache/pulsar-client-go/pulsar"
-	"github.com/prometheus/procfs"
+	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
+	"github.com/shirou/gopsutil/v4/process"
 	"github.com/shirou/gopsutil/v4/sensors"
 	"google.golang.org/protobuf/proto"
 )
+
+// Process CPU tracker
+type procCPUCache struct {
+	sync.RWMutex
+	lastCPU  map[int32]*cpu.TimesStat
+	lastTime time.Time
+}
+
+func (c *procCPUCache) calculateCPU(p *process.Process) float32 {
+	c.Lock()
+	defer c.Unlock()
+
+	times, err := p.Times()
+	if err != nil {
+		return 0
+	}
+
+	now := time.Now()
+
+	if lastCPU, ok := c.lastCPU[p.Pid]; ok && !c.lastTime.IsZero() {
+		duration := now.Sub(c.lastTime).Seconds()
+		if duration > 0 {
+			// Calculate CPU usage as percentage
+			cpuDelta := (times.User - lastCPU.User) + (times.System - lastCPU.System)
+			// Don't multiply by NumCPU - we want per-process percentage
+			cpuPercent := (cpuDelta / duration) * 100.0
+			c.lastCPU[p.Pid] = times
+			return float32(cpuPercent)
+		}
+	}
+
+	// First time seeing this process
+	c.lastCPU[p.Pid] = times
+	return 0
+}
+
+func (c *procCPUCache) cleanup(activePIDs map[int32]bool) {
+	c.Lock()
+	defer c.Unlock()
+
+	// Remove dead processes
+	for pid := range c.lastCPU {
+		if !activePIDs[pid] {
+			delete(c.lastCPU, pid)
+		}
+	}
+	c.lastTime = time.Now()
+}
 
 func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) error {
 	log.Printf("Agent starting with NodeID: %s, Topic: %s", cfg.NodeID, cfg.Topic)
@@ -35,22 +85,20 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 	}
 	defer prod.Close()
 
-	// Initialize procfs
-	fs, err := procfs.NewDefaultFS()
-	if err != nil {
-		return fmt.Errorf("failed to initialize procfs: %w", err)
-	}
-
 	log.Printf("Agent producer created successfully")
 
 	t := time.NewTicker(cfg.SamplePeriod)
 	defer t.Stop()
 
-	// Cache for calculating deltas
+	// Cache stats
+	var prevCPUTimes []cpu.TimesStat
 	var prevNetStats map[string]net.IOCountersStat
-	var prevStat procfs.Stat
-	var prevProcStats map[int]procfs.ProcStat
 	var prevTime time.Time
+
+	// Process CPU cache
+	procCPU := &procCPUCache{
+		lastCPU: make(map[int32]*cpu.TimesStat),
+	}
 
 	for {
 		select {
@@ -63,222 +111,186 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 				TsMs:   time.Now().UnixMilli(),
 			}
 
-			// CPU stats using procfs
-			stat, err := fs.Stat()
-			if err == nil {
-				// Calculate CPU usage from stat
-				if prevTime.IsZero() {
-					prevTime = time.Now()
-					prevStat = stat
-				} else {
-					currentTime := time.Now()
+			// CPU % - YOUR EXISTING OPTIMIZED CODE
+			currentCPUTimes, err := cpu.Times(true)
+			if err == nil && prevCPUTimes != nil {
+				// Overall %
+				var totalDelta, idleDelta float64
 
-					// Overall CPU calculation
-					totalDelta := float64(stat.CPUTotal.User - prevStat.CPUTotal.User +
-						stat.CPUTotal.Nice - prevStat.CPUTotal.Nice +
-						stat.CPUTotal.System - prevStat.CPUTotal.System +
-						stat.CPUTotal.Idle - prevStat.CPUTotal.Idle +
-						stat.CPUTotal.Iowait - prevStat.CPUTotal.Iowait +
-						stat.CPUTotal.IRQ - prevStat.CPUTotal.IRQ +
-						stat.CPUTotal.SoftIRQ - prevStat.CPUTotal.SoftIRQ +
-						stat.CPUTotal.Steal - prevStat.CPUTotal.Steal)
+				// Per core % slice
+				m.CpuCorePcts = make([]float32, len(currentCPUTimes))
 
-					idleDelta := float64(stat.CPUTotal.Idle - prevStat.CPUTotal.Idle)
+				for i, curr := range currentCPUTimes {
+					if i < len(prevCPUTimes) {
+						prev := prevCPUTimes[i]
+						total := (curr.User - prev.User) + (curr.System - prev.System) +
+							(curr.Idle - prev.Idle) + (curr.Nice - prev.Nice) +
+							(curr.Iowait - prev.Iowait) + (curr.Irq - prev.Irq) +
+							(curr.Softirq - prev.Softirq) + (curr.Steal - prev.Steal)
+						idle := curr.Idle - prev.Idle
 
-					if totalDelta > 0 {
-						m.CpuUsagePct = float32((1.0 - idleDelta/totalDelta) * 100.0)
-					}
+						totalDelta += total
+						idleDelta += idle
 
-					// Per-core CPU
-					m.CpuCorePcts = make([]float32, len(stat.CPU))
-					for i, cpu := range stat.CPU {
-						if int(i) < len(prevStat.CPU) {
-							prevCPU := prevStat.CPU[i]
-							coreTotal := float64(cpu.User - prevCPU.User +
-								cpu.Nice - prevCPU.Nice +
-								cpu.System - prevCPU.System +
-								cpu.Idle - prevCPU.Idle +
-								cpu.Iowait - prevCPU.Iowait +
-								cpu.IRQ - prevCPU.IRQ +
-								cpu.SoftIRQ - prevCPU.SoftIRQ +
-								cpu.Steal - prevCPU.Steal)
-							coreIdle := float64(cpu.Idle - prevCPU.Idle)
-							if coreTotal > 0 {
-								m.CpuCorePcts[i] = float32((1.0 - coreIdle/coreTotal) * 100.0)
+						// Per-core %
+						if total > 0 {
+							usage := 100.0 * (1.0 - idle/total)
+							if i < len(m.CpuCorePcts) {
+								m.CpuCorePcts[i] = float32(usage)
 							}
 						}
 					}
-
-					prevStat = stat
-					prevTime = currentTime
 				}
 
-				m.CpuCountLogical = uint32(len(stat.CPU))
-				m.CpuCountPhysical = uint32(runtime.NumCPU())
+				// Overall %
+				if totalDelta > 0 {
+					m.CpuUsagePct = float32(100.0 * (1.0 - idleDelta/totalDelta))
+				}
+			} else if err == nil {
+				// First pass: just times - no calc
+				m.CpuCorePcts = make([]float32, len(currentCPUTimes))
 			}
 
-			// Load average from procfs
-			if loadavg, err := fs.LoadAvg(); err == nil {
-				m.LoadAvg_1M = float32(loadavg.Load1)
-				m.LoadAvg_5M = float32(loadavg.Load5)
-				m.LoadAvg_15M = float32(loadavg.Load15)
-			}
+			// Update cache for next pass
+			prevCPUTimes = currentCPUTimes
 
-			// Process stats using procfs
-			if procs, err := fs.AllProcs(); err == nil {
+			// EFFICIENT PROCESS MONITORING
+			if procs, err := process.Processes(); err == nil {
 				m.ProcessCount = uint32(len(procs))
 
-				type procInfo struct {
-					proc   procfs.Proc
-					stat   procfs.ProcStat
-					cpuPct float32
-					memRss int64
+				type procStat struct {
+					proc    *process.Process
+					cpuPct  float32
+					memPct  float32
+					memRss  uint64
+					memVms  uint64
+					name    string
+					user    string
+					created int64
 				}
 
-				procInfos := make([]procInfo, 0)
-				currentProcStats := make(map[int]procfs.ProcStat)
-				threadCount := 0
+				// First pass: get memory for ALL processes (single syscall each)
+				procMemory := make([]struct {
+					proc *process.Process
+					rss  uint64
+				}, 0, len(procs))
 
-				// First pass: get basic stats for all processes
+				threadCount := 0
+				activePIDs := make(map[int32]bool)
+
 				for _, p := range procs {
-					stat, err := p.Stat()
-					if err != nil {
-						continue
+					activePIDs[p.Pid] = true
+
+					// Get memory info
+					if memInfo, err := p.MemoryInfo(); err == nil && memInfo.RSS > 0 {
+						procMemory = append(procMemory, struct {
+							proc *process.Process
+							rss  uint64
+						}{p, memInfo.RSS})
 					}
 
-					currentProcStats[p.PID] = stat
-					threadCount += stat.NumThreads
-
-					// Only track processes with meaningful memory
-					if stat.ResidentMemory() > 0 {
-						info := procInfo{
-							proc:   p,
-							stat:   stat,
-							memRss: int64(stat.ResidentMemory()),
-						}
-
-						// Calculate CPU% if we have previous data
-						if prevProcStats != nil {
-							if prevStat, ok := prevProcStats[p.PID]; ok && prevStat.Starttime == stat.Starttime {
-								// Same process (not restarted)
-								cpuDelta := (stat.UTime - prevStat.UTime) + (stat.STime - prevStat.STime)
-								timeDelta := time.Since(prevTime).Seconds()
-								if timeDelta > 0 {
-									info.cpuPct = float32(float64(cpuDelta) / timeDelta / float64(runtime.NumCPU()))
-								}
-							}
-						}
-
-						procInfos = append(procInfos, info)
+					// Count threads
+					if threads, err := p.NumThreads(); err == nil {
+						threadCount += int(threads)
 					}
 				}
 
 				m.ThreadCount = uint32(threadCount)
-				prevProcStats = currentProcStats
 
 				// Sort by memory to find top processes
-				sort.Slice(procInfos, func(i, j int) bool {
-					return procInfos[i].memRss > procInfos[j].memRss
+				sort.Slice(procMemory, func(i, j int) bool {
+					return procMemory[i].rss > procMemory[j].rss
 				})
 
-				// Get top 5 by memory
-				for i := 0; i < 5 && i < len(procInfos); i++ {
-					p := &procInfos[i]
+				// Get detailed stats for top 20 processes only
+				topCount := min(len(procMemory), 20)
+				procStats := make([]procStat, 0, topCount)
 
-					// Get username (this still requires a syscall, but only for top 5)
-					username := ""
-					if status, err := p.proc.NewStatus(); err == nil && len(status.UIDs) > 0 {
-						// You'd need to map UID to username here
-						username = fmt.Sprintf("uid:%d", status.UIDs[0])
+				for i := range topCount {
+					p := procMemory[i].proc
+					stat := procStat{
+						proc:   p,
+						memRss: procMemory[i].rss,
 					}
 
-					// Get memory info
-					memInfo, _ := fs.Meminfo()
-					memPct := float32(0)
-					if memInfo.MemTotal != nil && *memInfo.MemTotal > 0 {
-						memPct = float32(p.memRss) / float32(*memInfo.MemTotal) * 100
+					// Get CPU % using our cache
+					stat.cpuPct = procCPU.calculateCPU(p)
+
+					// Get other details
+					if memPct, err := p.MemoryPercent(); err == nil {
+						stat.memPct = memPct
+					}
+					if memInfo, err := p.MemoryInfo(); err == nil {
+						stat.memVms = memInfo.VMS
+					}
+					if name, err := p.Name(); err == nil {
+						stat.name = name
+					}
+					if user, err := p.Username(); err == nil {
+						stat.user = user
+					}
+					if created, err := p.CreateTime(); err == nil {
+						stat.created = created
 					}
 
-					m.TopMemProcs = append(m.TopMemProcs, &sensorpb.MetricFrame_ProcessInfo{
-						Pid:        int32(p.proc.PID),
-						Name:       p.stat.Comm,
-						CpuPct:     p.cpuPct,
-						MemPct:     memPct,
-						MemRss:     uint64(p.memRss),
-						MemVms:     uint64(p.stat.VirtualMemory()),
-						CreateTime: int64(p.stat.Starttime),
-						Username:   username,
-					})
+					procStats = append(procStats, stat)
+				}
+
+				// Clean up dead processes from cache
+				if len(procCPU.lastCPU) > 100 {
+					procCPU.cleanup(activePIDs)
 				}
 
 				// Sort by CPU for top CPU procs
-				sort.Slice(procInfos, func(i, j int) bool {
-					return procInfos[i].cpuPct > procInfos[j].cpuPct
+				sort.Slice(procStats, func(i, j int) bool {
+					return procStats[i].cpuPct > procStats[j].cpuPct
 				})
 
-				// Get top 5 by CPU
-				for i := 0; i < 5 && i < len(procInfos); i++ {
-					p := &procInfos[i]
-
-					username := ""
-					if status, err := p.proc.NewStatus(); err == nil && len(status.UIDs) > 0 {
-						username = fmt.Sprintf("uid:%d", status.UIDs[0])
-					}
-
-					memInfo, _ := fs.Meminfo()
-					memPct := float32(0)
-					if memInfo.MemTotal != nil && *memInfo.MemTotal > 0 {
-						memPct = float32(p.memRss) / float32(*memInfo.MemTotal) * 100
-					}
-
+				// Add top 5 by CPU
+				for i := 0; i < 5 && i < len(procStats); i++ {
+					p := &procStats[i]
 					m.TopCpuProcs = append(m.TopCpuProcs, &sensorpb.MetricFrame_ProcessInfo{
-						Pid:        int32(p.proc.PID),
-						Name:       p.stat.Comm,
+						Pid:        p.proc.Pid,
+						Name:       p.name,
 						CpuPct:     p.cpuPct,
-						MemPct:     memPct,
-						MemRss:     uint64(p.memRss),
-						MemVms:     uint64(p.stat.VirtualMemory()),
-						CreateTime: int64(p.stat.Starttime),
-						Username:   username,
+						MemPct:     p.memPct,
+						MemRss:     p.memRss,
+						MemVms:     p.memVms,
+						CreateTime: p.created,
+						Username:   p.user,
+					})
+				}
+
+				// Re-sort by memory for top memory list
+				sort.Slice(procStats, func(i, j int) bool {
+					return procStats[i].memRss > procStats[j].memRss
+				})
+
+				// Add top 5 by memory
+				for i := 0; i < 5 && i < len(procStats); i++ {
+					p := &procStats[i]
+					m.TopMemProcs = append(m.TopMemProcs, &sensorpb.MetricFrame_ProcessInfo{
+						Pid:        p.proc.Pid,
+						Name:       p.name,
+						CpuPct:     p.cpuPct,
+						MemPct:     p.memPct,
+						MemRss:     p.memRss,
+						MemVms:     p.memVms,
+						CreateTime: p.created,
+						Username:   p.user,
 					})
 				}
 			}
 
-			// Memory (use procfs meminfo)
-			if memInfo, err := fs.Meminfo(); err == nil {
-				if memInfo.MemTotal != nil {
-					m.MemTotal = *memInfo.MemTotal
+			// CPU hz
+			if cpuInfos, err := cpu.Info(); err == nil {
+				m.CpuFreqsMhz = make([]uint64, len(cpuInfos))
+				for i, info := range cpuInfos {
+					m.CpuFreqsMhz[i] = uint64(info.Mhz)
 				}
-				if memInfo.MemFree != nil {
-					m.MemFree = *memInfo.MemFree
+				if len(cpuInfos) > 0 {
+					m.CpuModel = cpuInfos[0].ModelName
 				}
-				if memInfo.MemAvailable != nil {
-					m.MemAvailable = *memInfo.MemAvailable
-				}
-				if memInfo.Cached != nil {
-					m.MemCached = *memInfo.Cached
-				}
-				if memInfo.Buffers != nil {
-					m.MemBuffers = *memInfo.Buffers
-				}
-				if memInfo.SwapTotal != nil {
-					m.SwapTotal = *memInfo.SwapTotal
-				}
-				if memInfo.SwapFree != nil {
-					m.SwapFree = *memInfo.SwapFree
-				}
-
-				// Calculate used
-				m.MemUsed = m.MemTotal - m.MemAvailable
-				m.SwapUsed = m.SwapTotal - m.SwapFree
-			}
-
-			// Keep using gopsutil for disk, network, temps, etc since procfs doesn't have good support
-			// [Rest of your existing code for disk, network, temps, etc...]
-
-			// CPU info (for model name)
-			if cpuinfo, err := fs.CPUInfo(); err == nil && len(cpuinfo) > 0 {
-				m.CpuModel = cpuinfo[0].ModelName
 			}
 
 			// Memory
