@@ -10,6 +10,7 @@ export PATH := $(GOBIN):$(PATH)
 all: build
 
 deps:
+	@go mod tidy
 	@go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 
 proto:
