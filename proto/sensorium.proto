@@ -8,12 +8,108 @@ message MetricFrame {
   string node_id = 1;
   int64 ts_ms = 2;
 
-  // Simplified POC: average CPU and temp (if known).
-  float cpu_usage_pct = 3; // 0..100
-  float cpu_temp_c = 4; // optional; 0 means unknown
+  // CPU
+  float cpu_usage_pct = 3;
+  float cpu_temp_c = 4;
+  repeated float cpu_core_pcts = 7;
+  repeated uint64 cpu_freqs_mhz = 8;
+  float load_avg_1m = 9;
+  float load_avg_5m = 10;
+  float load_avg_15m = 11;
+  uint32 process_count = 12;
+  uint32 thread_count = 13;
 
+  // Memory
   uint64 mem_used = 5;
   uint64 mem_total = 6;
+  uint64 mem_available = 14;
+  uint64 mem_free = 15;
+  uint64 mem_cached = 16;
+  uint64 mem_buffers = 17;
+  uint64 swap_used = 18;
+  uint64 swap_total = 19;
+  uint64 swap_free = 20;
+
+  // Disk
+  message DiskUsage {
+    string mount_point = 1;
+    string device = 2;
+    string fs_type = 3;
+    uint64 total = 4;
+    uint64 used = 5;
+    uint64 free = 6;
+    float usage_pct = 7;
+  }
+  repeated DiskUsage disk_usages = 21;
+
+  message DiskIO {
+    string device = 1;
+    uint64 read_count = 2;
+    uint64 write_count = 3;
+    uint64 read_bytes = 4;
+    uint64 write_bytes = 5;
+    uint64 read_time_ms = 6;
+    uint64 write_time_ms = 7;
+    uint64 io_time_ms = 8;
+  }
+  repeated DiskIO disk_ios = 22;
+
+  // Net
+  message NetworkInterface {
+    string name = 1;
+    uint64 bytes_sent = 2;
+    uint64 bytes_recv = 3;
+    uint64 packets_sent = 4;
+    uint64 packets_recv = 5;
+    uint64 err_in = 6;
+    uint64 err_out = 7;
+    uint64 drop_in = 8;
+    uint64 drop_out = 9;
+    uint64 speed_mbps = 10;
+  }
+  repeated NetworkInterface net_interfaces = 23;
+
+  // Temps
+  message TemperatureSensor {
+    string name = 1;
+    float temperature_c = 2;
+    float high_c = 3; // high
+    float critical_c = 4; // crit
+  }
+  repeated TemperatureSensor temp_sensors = 24;
+
+  // Top procs by CPU + memory
+  message ProcessInfo {
+    int32 pid = 1;
+    string name = 2;
+    float cpu_pct = 3;
+    float mem_pct = 4;
+    uint64 mem_rss = 5;
+    uint64 mem_vms = 6;
+    int64 create_time = 7;
+    string username = 8;
+  }
+  repeated ProcessInfo top_cpu_procs = 25; // top 5 by CPU
+  repeated ProcessInfo top_mem_procs = 26; // top 5 by memory
+
+  // Sys info
+  uint64 uptime_seconds = 27;
+  uint64 boot_time = 28;
+  string hostname = 29;
+  string os_platform = 30;
+  string os_family = 31;
+  string os_version = 32;
+  string kernel_version = 33;
+  string kernel_arch = 34;
+  uint32 cpu_count_logical = 35;
+  uint32 cpu_count_physical = 36;
+  string cpu_model = 37;
+
+  // Connections
+  uint32 conn_established = 38;
+  uint32 conn_listen = 39;
+  uint32 conn_time_wait = 40;
+  uint32 conn_close_wait = 41;
 }
 
 message HealthEvent {
