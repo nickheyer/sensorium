@@ -16,13 +16,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
-	log.Printf("UI starting on %s", cfg.UI.HTTPAddr)
+func Run(ctx context.Context, client pulsar.Client, cfg config.UIConfig) error {
+	log.Printf("UI starting on %s", cfg.HTTPAddr)
 
 	// Subscribe alerts
 	alertSub, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.UI.AlertsTopic,
-		SubscriptionName: cfg.UI.SubPrefix + "-ui-alerts",
+		Topic:            cfg.AlertsTopic,
+		SubscriptionName: cfg.SubPrefix + "-ui-alerts",
 		Type:             pulsar.Shared,
 	})
 	if err != nil {
@@ -30,12 +30,12 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 	}
 	defer alertSub.Close()
 
-	log.Printf("UI subscribed to alerts topic: %s", cfg.UI.AlertsTopic)
+	log.Printf("UI subscribed to alerts topic: %s", cfg.AlertsTopic)
 
 	// Subscribe metrics (latest per node)
 	metricSub, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.UI.MetricsTopic,
-		SubscriptionName: cfg.UI.SubPrefix + "-ui-metrics",
+		Topic:            cfg.MetricsTopic,
+		SubscriptionName: cfg.SubPrefix + "-ui-metrics",
 		Type:             pulsar.KeyShared,
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 	}
 	defer metricSub.Close()
 
-	log.Printf("UI subscribed to metrics topic: %s", cfg.UI.MetricsTopic)
+	log.Printf("UI subscribed to metrics topic: %s", cfg.MetricsTopic)
 
 	var (
 		mu           sync.RWMutex
@@ -135,13 +135,13 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 		}
 	})
 
-	srv := &http.Server{Addr: cfg.UI.HTTPAddr}
+	srv := &http.Server{Addr: cfg.HTTPAddr}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("UI HTTP server listening on %s", cfg.UI.HTTPAddr)
+	log.Printf("UI HTTP server listening on %s", cfg.HTTPAddr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTP server error: %w", err)
 	}

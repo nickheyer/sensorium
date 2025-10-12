@@ -13,16 +13,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
-	log.Printf("Detector starting - In: %s, Out: %s", cfg.Detector.InTopic, cfg.Detector.OutTopic)
+func Run(ctx context.Context, client pulsar.Client, cfg config.DetectorConfig) error {
+	log.Printf("Detector starting - In: %s, Out: %s", cfg.InTopic, cfg.OutTopic)
 
 	cons, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.Detector.InTopic,
-		SubscriptionName: cfg.Detector.SubName,
+		Topic:            cfg.InTopic,
+		SubscriptionName: cfg.SubName,
 		Type:             pulsar.KeyShared,
 		DLQ: &pulsar.DLQPolicy{
 			MaxDeliveries:   5,
-			DeadLetterTopic: cfg.Detector.InTopic + ".DLQ",
+			DeadLetterTopic: cfg.InTopic + ".DLQ",
 		},
 	})
 	if err != nil {
@@ -30,17 +30,17 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 	}
 	defer cons.Close()
 
-	log.Printf("Detector subscribed to %s", cfg.Detector.InTopic)
+	log.Printf("Detector subscribed to %s", cfg.InTopic)
 
 	prod, err := client.CreateProducer(pulsar.ProducerOptions{
-		Topic: cfg.Detector.OutTopic,
+		Topic: cfg.OutTopic,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create producer: %w", err)
 	}
 	defer prod.Close()
 
-	log.Printf("Detector producer created for %s", cfg.Detector.OutTopic)
+	log.Printf("Detector producer created for %s", cfg.OutTopic)
 
 	for {
 		msg, err := cons.Receive(ctx)
@@ -54,9 +54,9 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 		}
 
 		// CPU check
-		if mf.CpuUsagePct >= cfg.Detector.CPUWarn {
+		if mf.CpuUsagePct >= cfg.CPUWarn {
 			sev := "warn"
-			if mf.CpuUsagePct >= cfg.Detector.CPUCrit {
+			if mf.CpuUsagePct >= cfg.CPUCrit {
 				sev = "crit"
 			}
 			ev := &sensorpb.HealthEvent{
@@ -72,9 +72,9 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 		// Memory check
 		if mf.MemTotal > 0 {
 			ratio := float32(mf.MemUsed) / float32(mf.MemTotal)
-			if ratio >= cfg.Detector.MemWarn {
+			if ratio >= cfg.MemWarn {
 				sev := "warn"
-				if ratio >= cfg.Detector.MemCrit {
+				if ratio >= cfg.MemCrit {
 					sev = "crit"
 				}
 				ev := &sensorpb.HealthEvent{

@@ -11,15 +11,14 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config holds all configuration for the sensorium application
 type Config struct {
-	// Global settings
+	// Global Configs
 	Roles     []string `mapstructure:"roles"`
 	PulsarURL string   `mapstructure:"pulsar_url"`
 	SubPrefix string   `mapstructure:"sub_prefix"`
 	LogLevel  string   `mapstructure:"log_level"`
 
-	// Role-specific configurations
+	// Role Configs - these are getting passed to each role
 	Agent    AgentConfig    `mapstructure:"agent"`
 	Detector DetectorConfig `mapstructure:"detector"`
 	Alerter  AlerterConfig  `mapstructure:"alerter"`
@@ -56,7 +55,7 @@ type UIConfig struct {
 	SubPrefix    string `mapstructure:"sub_prefix"`
 }
 
-// setupFlags defines command-line flags using pflag
+// For CLI args
 func setupFlags() {
 	pflag.StringSlice("roles", []string{"ui"}, "Comma-separated list of roles to run")
 	pflag.String("pulsar-url", "pulsar://localhost:6650", "Pulsar broker URL")
@@ -64,28 +63,27 @@ func setupFlags() {
 	pflag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	pflag.String("config", "", "Config file path")
 
-	// Agent flags
+	// Agent
 	pflag.String("agent.node-id", "", "Node ID for agent role")
 	pflag.Duration("agent.sample-period", 2*time.Second, "Sample period for metrics collection")
 
-	// UI flags
+	// UI
 	pflag.String("ui.http-addr", ":8088", "HTTP address for UI server")
 
-	// Alerter flags
+	// Alerter
 	pflag.Duration("alerter.cooldown", 10*time.Minute, "Cooldown period between alerts")
 
-	// Detector flags
+	// Detector
 	pflag.Float32("detector.cpu-warn", 85.0, "CPU warning threshold")
 	pflag.Float32("detector.cpu-crit", 92.0, "CPU critical threshold")
 	pflag.Float32("detector.mem-warn", 0.90, "Memory warning threshold")
 	pflag.Float32("detector.mem-crit", 0.95, "Memory critical threshold")
 }
 
-// initViper sets up viper with defaults, env bindings, and config file support
 func initViper() *viper.Viper {
 	v := viper.New()
 
-	// Set config name and paths (for auto-discovery)
+	// Set config file
 	v.SetConfigName("sensorium")
 	v.SetConfigType("yaml")
 	v.AddConfigPath("/etc/sensorium/")
@@ -95,19 +93,10 @@ func initViper() *viper.Viper {
 	// Set defaults
 	setDefaults(v)
 
-	// Enable environment variables with automatic binding
+	// Auto bind env
 	v.SetEnvPrefix("SENSORIUM")
 	v.AutomaticEnv()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
-
-	// Bind specific environment variables with custom names for backwards compatibility
-	v.BindEnv("pulsar_url", "PULSAR_URL")
-	v.BindEnv("sub_prefix", "SUB_PREFIX")
-	v.BindEnv("log_level", "LOG_LEVEL")
-	v.BindEnv("agent.node_id", "NODE_ID")
-	v.BindEnv("agent.sample_period", "SAMPLE_MS")
-	v.BindEnv("alerter.cooldown", "ALERT_COOLDOWN")
-	v.BindEnv("ui.http_addr", "HTTP_ADDR")
 
 	return v
 }
@@ -146,33 +135,23 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ui.sub_prefix", "sensorium")
 }
 
-// Load reads configuration from file, env, and flags
 func Load() (*Config, error) {
-	// Setup command-line flags
 	setupFlags()
 	pflag.Parse()
-
-	// Initialize viper
 	v := initViper()
 
-	// Bind command-line flags to viper
+	// Bind CLI
 	if err := v.BindPFlags(pflag.CommandLine); err != nil {
 		return nil, fmt.Errorf("failed to bind flags: %w", err)
 	}
 
-	// Check if a specific config file was provided
-	if configFile := v.GetString("config"); configFile != "" {
-		v.SetConfigFile(configFile)
-		if err := v.ReadInConfig(); err != nil {
-			return nil, fmt.Errorf("failed to read config file %s: %w", configFile, err)
-		}
-	} else {
-		// Try to read config file from standard locations (optional)
-		if err := v.ReadInConfig(); err != nil {
-			// It's ok if config file doesn't exist
+	if err := v.ReadInConfig(); err != nil {
+		if v.GetString("config") == "" { // It's ok if config file doesn't exist
 			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 				return nil, fmt.Errorf("error reading config file: %w", err)
 			}
+		} else { // It's NOT ok if config file doesn't exist
+			return nil, fmt.Errorf("failed to read config file %s: %w", v.GetString("config"), err)
 		}
 	}
 
@@ -181,21 +160,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("unable to decode config: %w", err)
 	}
 
-	// Handle SAMPLE_MS environment variable for backwards compatibility
-	if sampleMs := os.Getenv("SAMPLE_MS"); sampleMs != "" {
-		if ms, err := time.ParseDuration(sampleMs + "ms"); err == nil {
-			cfg.Agent.SamplePeriod = ms
-		}
-	}
-
-	// Update subscription names based on sub_prefix
+	// Update sub names
 	if cfg.SubPrefix != "" {
 		cfg.Detector.SubName = cfg.SubPrefix + "-detector"
 		cfg.Alerter.SubName = cfg.SubPrefix + "-alerter"
 		cfg.UI.SubPrefix = cfg.SubPrefix
 	}
 
-	// Validate the configuration
+	// Validate config
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -203,7 +175,6 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	if len(c.Roles) == 0 {
 		return fmt.Errorf("no roles specified")
@@ -225,7 +196,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// HasRole checks if the config includes a specific role
 func (c *Config) HasRole(role string) bool {
 	return slices.Contains(c.Roles, role)
 }

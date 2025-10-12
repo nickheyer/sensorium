@@ -15,13 +15,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
+func Run(ctx context.Context, client pulsar.Client, cfg config.AlerterConfig) error {
 	log.Printf("Alerter starting - In: %s, Out: %s, Cooldown: %v",
-		cfg.Alerter.InTopic, cfg.Alerter.OutTopic, cfg.Alerter.Cooldown)
+		cfg.InTopic, cfg.OutTopic, cfg.Cooldown)
 
 	cons, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.Alerter.InTopic,
-		SubscriptionName: cfg.Alerter.SubName,
+		Topic:            cfg.InTopic,
+		SubscriptionName: cfg.SubName,
 		Type:             pulsar.Shared,
 	})
 	if err != nil {
@@ -29,17 +29,17 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 	}
 	defer cons.Close()
 
-	log.Printf("Alerter subscribed to %s", cfg.Alerter.InTopic)
+	log.Printf("Alerter subscribed to %s", cfg.InTopic)
 
 	prod, err := client.CreateProducer(pulsar.ProducerOptions{
-		Topic: cfg.Alerter.OutTopic,
+		Topic: cfg.OutTopic,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create producer: %w", err)
 	}
 	defer prod.Close()
 
-	log.Printf("Alerter producer created for %s", cfg.Alerter.OutTopic)
+	log.Printf("Alerter producer created for %s", cfg.OutTopic)
 
 	last := map[string]time.Time{} // key: node.kind -> last sent
 
@@ -55,7 +55,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 		}
 		k := ev.NodeId + "|" + ev.Kind
 		now := time.Now()
-		if t, ok := last[k]; ok && now.Sub(t) < cfg.Alerter.Cooldown {
+		if t, ok := last[k]; ok && now.Sub(t) < cfg.Cooldown {
 			cons.Ack(msg)
 			continue
 		}

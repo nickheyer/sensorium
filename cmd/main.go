@@ -18,7 +18,7 @@ import (
 )
 
 func main() {
-	// Load configuration from file, env, and flags
+	// Load configs
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -41,9 +41,7 @@ func main() {
 
 	var wg sync.WaitGroup
 	start := func(name string, fn func(context.Context) error) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			log.Printf("Starting role: %s", name)
 			retryCount := 0
 			for {
@@ -64,34 +62,34 @@ func main() {
 				log.Printf("[%s] Completed successfully", name)
 				return
 			}
-		}()
+		})
 	}
 
-	// Start roles based on configuration
+	// Start roles
 	for _, role := range cfg.Roles {
 		switch role {
 		case "agent":
 			start("agent", func(ctx context.Context) error {
-				return agent.Run(ctx, client, cfg)
+				return agent.Run(ctx, client, cfg.Agent)
 			})
 		case "detector":
 			start("detector", func(ctx context.Context) error {
-				return detector.Run(ctx, client, cfg)
+				return detector.Run(ctx, client, cfg.Detector)
 			})
 		case "alerter":
 			start("alerter", func(ctx context.Context) error {
-				return alerter.Run(ctx, client, cfg)
+				return alerter.Run(ctx, client, cfg.Alerter)
 			})
 		case "ui":
 			start("ui", func(ctx context.Context) error {
-				return ui.Run(ctx, client, cfg)
+				return ui.Run(ctx, client, cfg.UI)
 			})
 		default:
 			log.Fatalf("Unknown role: %q", role)
 		}
 	}
 
-	// Wait for interrupt signal
+	// Wait for int signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
@@ -100,7 +98,7 @@ func main() {
 	<-sigCh
 	log.Println("Shutdown signal received, stopping all roles...")
 
-	// Cancel context and wait for goroutines
+	// Cancel out and wait for goroutines
 	cancel()
 	wg.Wait()
 
