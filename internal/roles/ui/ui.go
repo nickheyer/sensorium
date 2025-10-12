@@ -118,8 +118,8 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 
 		for _, nodeID := range nodeIDs {
 			mf := latestByNode[nodeID]
-			age := time.Since(time.UnixMilli(mf.TsMs))
-			next := cfg.Agent.SamplePeriod - age
+			age := time.Since(time.UnixMilli(mf.TsMs)).Truncate(time.Second)
+			next := (cfg.Agent.SamplePeriod - age).Truncate(time.Second)
 
 			// Node header
 			fmt.Fprintln(w)
@@ -127,8 +127,8 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 			if mf.Hostname != "" && mf.Hostname != nodeID {
 				fmt.Fprintf(w, " (%s)", mf.Hostname)
 			}
-			fmt.Fprintf(w, " - Last Update: %s ago", age.Truncate(time.Second))
-			fmt.Fprintf(w, " - Next Update: in %s\n", next.Truncate(time.Second))
+			fmt.Fprintf(w, " - Last Update: %s ago", age)
+			fmt.Fprintf(w, " - Next Update: in %s\n", next)
 			fmt.Fprintln(w, strings.Repeat("-", 100))
 
 			// Sys info
