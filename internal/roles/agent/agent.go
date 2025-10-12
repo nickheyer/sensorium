@@ -7,70 +7,23 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
 	"sensorium/internal/config"
 	sensorpb "sensorium/internal/proto"
+
+	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
+	"github.com/shirou/gopsutil/v4/load"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/shirou/gopsutil/v4/sensors"
 	"google.golang.org/protobuf/proto"
 )
-
-// Process CPU tracker
-type procCPUCache struct {
-	sync.RWMutex
-	lastCPU  map[int32]*cpu.TimesStat
-	lastTime time.Time
-}
-
-func (c *procCPUCache) calculateCPU(p *process.Process) float32 {
-	c.Lock()
-	defer c.Unlock()
-
-	times, err := p.Times()
-	if err != nil {
-		return 0
-	}
-
-	now := time.Now()
-
-	if lastCPU, ok := c.lastCPU[p.Pid]; ok && !c.lastTime.IsZero() {
-		duration := now.Sub(c.lastTime).Seconds()
-		if duration > 0 {
-			// Calculate CPU usage as percentage
-			cpuDelta := (times.User - lastCPU.User) + (times.System - lastCPU.System)
-			// Don't multiply by NumCPU - we want per-process percentage
-			cpuPercent := (cpuDelta / duration) * 100.0
-			c.lastCPU[p.Pid] = times
-			return float32(cpuPercent)
-		}
-	}
-
-	// First time seeing this process
-	c.lastCPU[p.Pid] = times
-	return 0
-}
-
-func (c *procCPUCache) cleanup(activePIDs map[int32]bool) {
-	c.Lock()
-	defer c.Unlock()
-
-	// Remove dead processes
-	for pid := range c.lastCPU {
-		if !activePIDs[pid] {
-			delete(c.lastCPU, pid)
-		}
-	}
-	c.lastTime = time.Now()
-}
 
 func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) error {
 	log.Printf("Agent starting with NodeID: %s, Topic: %s", cfg.NodeID, cfg.Topic)
@@ -90,15 +43,9 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 	t := time.NewTicker(cfg.SamplePeriod)
 	defer t.Stop()
 
-	// Cache stats
-	var prevCPUTimes []cpu.TimesStat
+	// Cache for net ifaces
 	var prevNetStats map[string]net.IOCountersStat
 	var prevTime time.Time
-
-	// Process CPU cache
-	procCPU := &procCPUCache{
-		lastCPU: make(map[int32]*cpu.TimesStat),
-	}
 
 	for {
 		select {
@@ -111,50 +58,46 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 				TsMs:   time.Now().UnixMilli(),
 			}
 
-			// CPU % - YOUR EXISTING OPTIMIZED CODE
-			currentCPUTimes, err := cpu.Times(true)
-			if err == nil && prevCPUTimes != nil {
-				// Overall %
-				var totalDelta, idleDelta float64
-
-				// Per core % slice
-				m.CpuCorePcts = make([]float32, len(currentCPUTimes))
-
-				for i, curr := range currentCPUTimes {
-					if i < len(prevCPUTimes) {
-						prev := prevCPUTimes[i]
-						total := (curr.User - prev.User) + (curr.System - prev.System) +
-							(curr.Idle - prev.Idle) + (curr.Nice - prev.Nice) +
-							(curr.Iowait - prev.Iowait) + (curr.Irq - prev.Irq) +
-							(curr.Softirq - prev.Softirq) + (curr.Steal - prev.Steal)
-						idle := curr.Idle - prev.Idle
-
-						totalDelta += total
-						idleDelta += idle
-
-						// Per-core %
-						if total > 0 {
-							usage := 100.0 * (1.0 - idle/total)
-							if i < len(m.CpuCorePcts) {
-								m.CpuCorePcts[i] = float32(usage)
-							}
-						}
-					}
-				}
-
-				// Overall %
-				if totalDelta > 0 {
-					m.CpuUsagePct = float32(100.0 * (1.0 - idleDelta/totalDelta))
-				}
-			} else if err == nil {
-				// First pass: just times - no calc
-				m.CpuCorePcts = make([]float32, len(currentCPUTimes))
+			// CPU %
+			if cpuPcts, err := cpu.Percent(0, false); err == nil && len(cpuPcts) > 0 {
+				m.CpuUsagePct = float32(cpuPcts[0])
 			}
 
-			// Update cache for next pass
-			prevCPUTimes = currentCPUTimes
+			// Per-core usage
+			if coresPcts, err := cpu.Percent(0, true); err == nil {
+				m.CpuCorePcts = make([]float32, len(coresPcts))
+				for i, pct := range coresPcts {
+					m.CpuCorePcts[i] = float32(pct)
+				}
+			}
 
-			// EFFICIENT PROCESS MONITORING
+			// CPU hz
+			if cpuInfos, err := cpu.Info(); err == nil {
+				m.CpuFreqsMhz = make([]uint64, len(cpuInfos))
+				for i, info := range cpuInfos {
+					m.CpuFreqsMhz[i] = uint64(info.Mhz)
+				}
+				if len(cpuInfos) > 0 {
+					m.CpuModel = cpuInfos[0].ModelName
+				}
+			}
+
+			// CPU counts
+			if logical, err := cpu.Counts(true); err == nil {
+				m.CpuCountLogical = uint32(logical)
+			}
+			if physical, err := cpu.Counts(false); err == nil {
+				m.CpuCountPhysical = uint32(physical)
+			}
+
+			// Load avg
+			if loadAvg, err := load.Avg(); err == nil {
+				m.LoadAvg_1M = float32(loadAvg.Load1)
+				m.LoadAvg_5M = float32(loadAvg.Load5)
+				m.LoadAvg_15M = float32(loadAvg.Load15)
+			}
+
+			// Proc/thread ct
 			if procs, err := process.Processes(); err == nil {
 				m.ProcessCount = uint32(len(procs))
 
@@ -169,58 +112,18 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 					created int64
 				}
 
-				// First pass: get memory for ALL processes (single syscall each)
-				procMemory := make([]struct {
-					proc *process.Process
-					rss  uint64
-				}, 0, len(procs))
-
-				threadCount := 0
-				activePIDs := make(map[int32]bool)
-
+				procStats := make([]procStat, 0, len(procs))
 				for _, p := range procs {
-					activePIDs[p.Pid] = true
+					stat := procStat{proc: p}
 
-					// Get memory info
-					if memInfo, err := p.MemoryInfo(); err == nil && memInfo.RSS > 0 {
-						procMemory = append(procMemory, struct {
-							proc *process.Process
-							rss  uint64
-						}{p, memInfo.RSS})
+					if cpuPct, err := p.CPUPercent(); err == nil {
+						stat.cpuPct = float32(cpuPct)
 					}
-
-					// Count threads
-					if threads, err := p.NumThreads(); err == nil {
-						threadCount += int(threads)
-					}
-				}
-
-				m.ThreadCount = uint32(threadCount)
-
-				// Sort by memory to find top processes
-				sort.Slice(procMemory, func(i, j int) bool {
-					return procMemory[i].rss > procMemory[j].rss
-				})
-
-				// Get detailed stats for top 20 processes only
-				topCount := min(len(procMemory), 20)
-				procStats := make([]procStat, 0, topCount)
-
-				for i := range topCount {
-					p := procMemory[i].proc
-					stat := procStat{
-						proc:   p,
-						memRss: procMemory[i].rss,
-					}
-
-					// Get CPU % using our cache
-					stat.cpuPct = procCPU.calculateCPU(p)
-
-					// Get other details
 					if memPct, err := p.MemoryPercent(); err == nil {
 						stat.memPct = memPct
 					}
 					if memInfo, err := p.MemoryInfo(); err == nil {
+						stat.memRss = memInfo.RSS
 						stat.memVms = memInfo.VMS
 					}
 					if name, err := p.Name(); err == nil {
@@ -236,17 +139,10 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 					procStats = append(procStats, stat)
 				}
 
-				// Clean up dead processes from cache
-				if len(procCPU.lastCPU) > 100 {
-					procCPU.cleanup(activePIDs)
-				}
-
-				// Sort by CPU for top CPU procs
+				// Top 5 procs by CPU %
 				sort.Slice(procStats, func(i, j int) bool {
 					return procStats[i].cpuPct > procStats[j].cpuPct
 				})
-
-				// Add top 5 by CPU
 				for i := 0; i < 5 && i < len(procStats); i++ {
 					p := &procStats[i]
 					m.TopCpuProcs = append(m.TopCpuProcs, &sensorpb.MetricFrame_ProcessInfo{
@@ -261,12 +157,10 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 					})
 				}
 
-				// Re-sort by memory for top memory list
+				// Top 5 procs by mem
 				sort.Slice(procStats, func(i, j int) bool {
-					return procStats[i].memRss > procStats[j].memRss
+					return procStats[i].memPct > procStats[j].memPct
 				})
-
-				// Add top 5 by memory
 				for i := 0; i < 5 && i < len(procStats); i++ {
 					p := &procStats[i]
 					m.TopMemProcs = append(m.TopMemProcs, &sensorpb.MetricFrame_ProcessInfo{
@@ -280,17 +174,15 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 						Username:   p.user,
 					})
 				}
-			}
 
-			// CPU hz
-			if cpuInfos, err := cpu.Info(); err == nil {
-				m.CpuFreqsMhz = make([]uint64, len(cpuInfos))
-				for i, info := range cpuInfos {
-					m.CpuFreqsMhz[i] = uint64(info.Mhz)
+				// Count threads
+				threadCount := 0
+				for _, p := range procs {
+					if threads, err := p.NumThreads(); err == nil {
+						threadCount += int(threads)
+					}
 				}
-				if len(cpuInfos) > 0 {
-					m.CpuModel = cpuInfos[0].ModelName
-				}
+				m.ThreadCount = uint32(threadCount)
 			}
 
 			// Memory

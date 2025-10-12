@@ -82,7 +82,7 @@ func main() {
 			})
 		case "ui":
 			start("ui", func(ctx context.Context) error {
-				return ui.Run(ctx, client, cfg.UI)
+				return ui.Run(ctx, client, cfg)
 			})
 		default:
 			log.Fatalf("Unknown role: %q", role)

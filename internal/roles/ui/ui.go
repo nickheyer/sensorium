@@ -17,13 +17,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func Run(ctx context.Context, client pulsar.Client, cfg config.UIConfig) error {
-	log.Printf("UI starting on %s", cfg.HTTPAddr)
+func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
+	log.Printf("UI starting on %s", cfg.UI.HTTPAddr)
 
 	// Subscribe alerts
 	alertSub, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.AlertsTopic,
-		SubscriptionName: cfg.SubPrefix + "-ui-alerts",
+		Topic:            cfg.UI.AlertsTopic,
+		SubscriptionName: cfg.UI.SubPrefix + "-ui-alerts",
 		Type:             pulsar.Shared,
 	})
 	if err != nil {
@@ -31,12 +31,12 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.UIConfig) error {
 	}
 	defer alertSub.Close()
 
-	log.Printf("UI subscribed to alerts topic: %s", cfg.AlertsTopic)
+	log.Printf("UI subscribed to alerts topic: %s", cfg.UI.AlertsTopic)
 
 	// Subscribe metrics (latest per node)
 	metricSub, err := client.Subscribe(pulsar.ConsumerOptions{
-		Topic:            cfg.MetricsTopic,
-		SubscriptionName: cfg.SubPrefix + "-ui-metrics",
+		Topic:            cfg.UI.MetricsTopic,
+		SubscriptionName: cfg.UI.SubPrefix + "-ui-metrics",
 		Type:             pulsar.KeyShared,
 	})
 	if err != nil {
@@ -44,7 +44,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.UIConfig) error {
 	}
 	defer metricSub.Close()
 
-	log.Printf("UI subscribed to metrics topic: %s", cfg.MetricsTopic)
+	log.Printf("UI subscribed to metrics topic: %s", cfg.UI.MetricsTopic)
 
 	var (
 		mu           sync.RWMutex
@@ -119,6 +119,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.UIConfig) error {
 		for _, nodeID := range nodeIDs {
 			mf := latestByNode[nodeID]
 			age := time.Since(time.UnixMilli(mf.TsMs))
+			next := age - cfg.Agent.SamplePeriod
 
 			// Node header
 			fmt.Fprintln(w)
@@ -127,6 +128,7 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.UIConfig) error {
 				fmt.Fprintf(w, " (%s)", mf.Hostname)
 			}
 			fmt.Fprintf(w, " - Last Update: %s ago\n", age.Truncate(time.Second))
+			fmt.Fprintf(w, " - Next Update: in %s\n", next.Truncate(time.Second))
 			fmt.Fprintln(w, strings.Repeat("-", 100))
 
 			// Sys info
@@ -295,13 +297,13 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.UIConfig) error {
 		fmt.Fprintln(w, strings.Repeat("=", 100))
 	})
 
-	srv := &http.Server{Addr: cfg.HTTPAddr}
+	srv := &http.Server{Addr: cfg.UI.HTTPAddr}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("UI HTTP server listening on %s", cfg.HTTPAddr)
+	log.Printf("UI HTTP server listening on %s", cfg.UI.HTTPAddr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTP server error: %w", err)
 	}
