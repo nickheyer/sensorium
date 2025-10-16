@@ -1,15 +1,11 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
-	"maps"
-	"os"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,47 +44,9 @@ type procCPU struct {
 	start int64
 }
 
-var (
-	lastSample    *cpuSample
-	procCache     []*process.Process // A: persistent cache of processes
-	procTimesCurr = make(map[int32]float64, 4096)
-)
+var lastSample *cpuSample
 
 // Helpers
-
-// Get cached process list and prune dead ones
-func getProcesses(ctx context.Context) []*process.Process {
-	if len(procCache) == 0 {
-		procCache, _ = process.ProcessesWithContext(ctx)
-		return procCache
-	}
-	alive := procCache[:0]
-	for _, p := range procCache {
-		if ok, _ := p.IsRunning(); ok {
-			alive = append(alive, p)
-		}
-	}
-	procCache = alive
-	return procCache
-}
-
-// Reads /proc/[pid]/stat
-func readProcTimes(pid int32) (float64, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, err
-	}
-	fields := bytes.Fields(data)
-	if len(fields) < 17 {
-		return 0, fmt.Errorf("invalid stat for pid %d", pid)
-	}
-	utime, err1 := strconv.ParseFloat(string(fields[13]), 64)
-	stime, err2 := strconv.ParseFloat(string(fields[14]), 64)
-	if err1 != nil || err2 != nil {
-		return 0, fmt.Errorf("bad parse pid %d", pid)
-	}
-	return utime + stime, nil
-}
 
 func sampleCPU(ctx context.Context) (*cpuSample, error) {
 	times, err := cpu.Times(false)
@@ -100,27 +58,23 @@ func sampleCPU(ctx context.Context) (*cpuSample, error) {
 	total := sampler.User + sampler.System + sampler.Idle + sampler.Nice + sampler.Iowait + sampler.Irq +
 		sampler.Softirq + sampler.Steal + sampler.Guest + sampler.GuestNice
 
-	procs := getProcesses(ctx)
+	procs, err := process.Processes()
+	if err != nil {
+		return nil, err
+	}
 
 	threadCt := int32(0)
-	clear(procTimesCurr) // E: reuse map memory
+	ps := make(map[int32]float64, len(procs))
 	for _, p := range procs {
-		t, err := readProcTimes(p.Pid)
+		t, err := p.TimesWithContext(ctx)
 		if err != nil {
 			continue
 		}
-		procTimesCurr[p.Pid] = t
+		ps[p.Pid] = t.User + t.System
 		numThreads, _ := p.NumThreadsWithContext(ctx)
 		threadCt += numThreads
 	}
-	sample := &cpuSample{
-		total:       total,
-		procs:       make(map[int32]float64, len(procTimesCurr)),
-		threadCount: threadCt,
-		at:          time.Now(),
-	}
-	maps.Copy(sample.procs, procTimesCurr)
-	return sample, nil
+	return &cpuSample{total: total, procs: ps, threadCount: threadCt, at: time.Now()}, nil
 }
 
 func diffAndRank(ctx context.Context, prev, curr *cpuSample, topN int) ([]procCPU, error) {
@@ -284,10 +238,8 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 
 			// Proc/thread ct
 			topCPU, topMem, sample, _ := GetTopProcesses(ctx, 5)
-			if sample != nil {
-				m.ThreadCount = sample.threadCount
-				m.ProcessCount = int32(len(sample.procs))
-			}
+			m.ThreadCount = sample.threadCount
+			m.ProcessCount = int32(len(sample.procs))
 
 			for _, p := range topCPU {
 				// Top 5 procs by CPU %
