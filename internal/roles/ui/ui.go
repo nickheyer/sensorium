@@ -152,14 +152,25 @@ func Run(ctx context.Context, client pulsar.Client, cfg *config.Config) error {
 
 			// CPU per-core
 			if len(mf.CpuCorePcts) > 0 {
-				fmt.Fprint(w, "  Per-Core: ")
+				fmt.Fprintln(w, "  Per-Core:")
+
+				const cols = 8 // cores per row
+				barWidth := 10 // chars per bar
+
 				for i, pct := range mf.CpuCorePcts {
-					if i > 0 {
-						fmt.Fprint(w, ", ")
+					if i%cols == 0 {
+						fmt.Fprint(w, "   ") // indent
 					}
-					fmt.Fprintf(w, "C%d: %.0f%%", i, pct)
+
+					// Draw usage
+					filled := min(int((pct/100.0)*float32(barWidth)), barWidth)
+					bar := strings.Repeat("█", filled) + strings.Repeat(" ", barWidth-filled)
+
+					fmt.Fprintf(w, "C%-3d[%s]%3.0f%%  ", i, bar, pct)
+					if (i+1)%cols == 0 || i == len(mf.CpuCorePcts)-1 {
+						fmt.Fprintln(w)
+					}
 				}
-				fmt.Fprintln(w)
 			}
 
 			// Load avgs
