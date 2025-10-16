@@ -5,7 +5,7 @@ export GOBIN := $(shell pwd)/bin
 export GOPATH := $(shell go env GOPATH)
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all proto build dev pulsar-up pulsar-down clean deps
+.PHONY: all gen build dev pulsar-up pulsar-down clean deps
 
 all: build
 
@@ -13,10 +13,10 @@ deps:
 	@go mod tidy
 	@go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 
-proto:
+gen:
 	@protoc --go_out=. proto/sensorium.proto
 
-build: proto
+build: clean gen
 	@go build -o bin/$(APP) ./cmd
 
 dev:

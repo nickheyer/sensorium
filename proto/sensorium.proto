@@ -16,8 +16,8 @@ message MetricFrame {
   float load_avg_1m = 9;
   float load_avg_5m = 10;
   float load_avg_15m = 11;
-  uint32 process_count = 12;
-  uint32 thread_count = 13;
+  int32 process_count = 12;
+  int32 thread_count = 13;
 
   // Memory
   uint64 mem_used = 5;
@@ -82,7 +82,7 @@ message MetricFrame {
   message ProcessInfo {
     int32 pid = 1;
     string name = 2;
-    float cpu_pct = 3;
+    double cpu_pct = 3;
     float mem_pct = 4;
     uint64 mem_rss = 5;
     uint64 mem_vms = 6;

@@ -7,11 +7,10 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"sensorium/internal/config"
 	sensorpb "sensorium/internal/proto"
-
-	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -24,6 +23,136 @@ import (
 	"github.com/shirou/gopsutil/v4/sensors"
 	"google.golang.org/protobuf/proto"
 )
+
+type cpuSample struct {
+	total       float64
+	procs       map[int32]float64
+	threadCount int32
+	at          time.Time
+}
+
+type procCPU struct {
+	pid   int32
+	name  string
+	cpu   float64
+	mem   float32
+	rss   uint64
+	vms   uint64
+	user  string
+	start int64
+}
+
+var lastSample *cpuSample
+
+// Helpers
+
+func sampleCPU(ctx context.Context) (*cpuSample, error) {
+	times, err := cpu.Times(false)
+	if err != nil || len(times) == 0 {
+		return nil, err
+	}
+
+	sampler := times[0]
+	total := sampler.User + sampler.System + sampler.Idle + sampler.Nice + sampler.Iowait + sampler.Irq +
+		sampler.Softirq + sampler.Steal + sampler.Guest + sampler.GuestNice
+
+	procs, err := process.Processes()
+	if err != nil {
+		return nil, err
+	}
+
+	threadCt := int32(0)
+	ps := make(map[int32]float64, len(procs))
+	for _, p := range procs {
+		t, err := p.TimesWithContext(ctx)
+		if err != nil {
+			continue
+		}
+		ps[p.Pid] = t.User + t.System
+		numThreads, _ := p.NumThreadsWithContext(ctx)
+		threadCt += numThreads
+	}
+	return &cpuSample{total: total, procs: ps, threadCount: threadCt, at: time.Now()}, nil
+}
+
+func diffAndRank(prev, curr *cpuSample, topN int) ([]procCPU, error) {
+	totalDelta := curr.total - prev.total
+	if totalDelta <= 0 {
+		return nil, fmt.Errorf("invalid CPU delta")
+	}
+
+	numCPU, _ := cpu.Counts(true)
+	results := make([]procCPU, 0, len(curr.procs))
+
+	for pid, curTime := range curr.procs {
+		prevTime, ok := prev.procs[pid]
+		if !ok {
+			continue
+		}
+		delta := curTime - prevTime
+		if delta <= 0 {
+			continue
+		}
+
+		usage := (delta / totalDelta) * 100 * float64(numCPU)
+		if usage <= 0 {
+			continue
+		}
+
+		p, err := process.NewProcess(pid)
+		if err != nil {
+			continue
+		}
+		name, _ := p.Name()
+		memPct, _ := p.MemoryPercent()
+		memInfo, _ := p.MemoryInfo()
+		user, _ := p.Username()
+		start, _ := p.CreateTime()
+
+		results = append(results, procCPU{
+			pid: pid, name: name, cpu: usage,
+			mem: memPct, rss: memInfo.RSS, vms: memInfo.VMS,
+			user: user, start: start,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].cpu > results[j].cpu
+	})
+	if len(results) > topN {
+		results = results[:topN]
+	}
+	return results, nil
+}
+
+func GetTopProcesses(ctx context.Context, topN int) (cpuTop, memTop []procCPU, sample *cpuSample, err error) {
+	curr, err := sampleCPU(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if lastSample == nil {
+		lastSample = curr
+		return nil, nil, nil, nil // no baseline yet
+	}
+
+	procs, err := diffAndRank(lastSample, curr, topN)
+	lastSample = curr
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// Also top mem
+	memSorted := make([]procCPU, len(procs))
+	copy(memSorted, procs)
+	sort.Slice(memSorted, func(i, j int) bool {
+		return memSorted[i].mem > memSorted[j].mem
+	})
+	if len(memSorted) > topN {
+		memSorted = memSorted[:topN]
+	}
+
+	return procs, memSorted, curr, nil
+}
 
 func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) error {
 	log.Printf("Agent starting with NodeID: %s, Topic: %s", cfg.NodeID, cfg.Topic)
@@ -38,17 +167,14 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 	}
 	defer prod.Close()
 
-	log.Printf("Agent producer created successfully")
-
 	t := time.NewTicker(cfg.SamplePeriod)
 	defer t.Stop()
 
-	// Cache for net ifaces
+	process.EnableBootTimeCache(true)
+	lastSample, _ = sampleCPU(ctx) // seed
+
 	var prevNetStats map[string]net.IOCountersStat
 	var prevTime time.Time
-
-	process.EnableBootTimeCache(true) // Enabling this because of some random mentions on github.
-	// Edit: For once this actually worked, keep it
 
 	for {
 		select {
@@ -101,91 +227,36 @@ func Run(ctx context.Context, client pulsar.Client, cfg config.AgentConfig) erro
 			}
 
 			// Proc/thread ct
-			if procs, err := process.Processes(); err == nil {
-				m.ProcessCount = uint32(len(procs))
+			topCPU, topMem, sample, _ := GetTopProcesses(ctx, 5)
+			m.ThreadCount = sample.threadCount
+			m.ProcessCount = int32(len(sample.procs))
 
-				type procStat struct {
-					proc    *process.Process
-					cpuPct  float32
-					memPct  float32
-					memRss  uint64
-					memVms  uint64
-					name    string
-					user    string
-					created int64
-				}
-
-				procStats := make([]procStat, 0, len(procs))
-				for _, p := range procs {
-					stat := procStat{proc: p}
-
-					if cpuPct, err := p.CPUPercent(); err == nil {
-						stat.cpuPct = float32(cpuPct)
-					}
-					if memPct, err := p.MemoryPercent(); err == nil {
-						stat.memPct = memPct
-					}
-					if memInfo, err := p.MemoryInfo(); err == nil {
-						stat.memRss = memInfo.RSS
-						stat.memVms = memInfo.VMS
-					}
-					if name, err := p.Name(); err == nil {
-						stat.name = name
-					}
-					if user, err := p.Username(); err == nil {
-						stat.user = user
-					}
-					if created, err := p.CreateTime(); err == nil {
-						stat.created = created
-					}
-
-					procStats = append(procStats, stat)
-				}
-
+			for _, p := range topCPU {
 				// Top 5 procs by CPU %
-				sort.Slice(procStats, func(i, j int) bool {
-					return procStats[i].cpuPct > procStats[j].cpuPct
+				m.TopCpuProcs = append(m.TopCpuProcs, &sensorpb.MetricFrame_ProcessInfo{
+					Pid:        p.pid,
+					Name:       p.name,
+					CpuPct:     p.cpu,
+					MemPct:     p.mem,
+					MemRss:     p.rss,
+					MemVms:     p.vms,
+					CreateTime: p.start,
+					Username:   p.user,
 				})
-				for i := 0; i < 5 && i < len(procStats); i++ {
-					p := &procStats[i]
-					m.TopCpuProcs = append(m.TopCpuProcs, &sensorpb.MetricFrame_ProcessInfo{
-						Pid:        p.proc.Pid,
-						Name:       p.name,
-						CpuPct:     p.cpuPct,
-						MemPct:     p.memPct,
-						MemRss:     p.memRss,
-						MemVms:     p.memVms,
-						CreateTime: p.created,
-						Username:   p.user,
-					})
-				}
+			}
 
-				// Top 5 procs by mem
-				sort.Slice(procStats, func(i, j int) bool {
-					return procStats[i].memPct > procStats[j].memPct
+			// Top 5 procs by mem
+			for _, p := range topMem {
+				m.TopMemProcs = append(m.TopMemProcs, &sensorpb.MetricFrame_ProcessInfo{
+					Pid:        p.pid,
+					Name:       p.name,
+					CpuPct:     p.cpu,
+					MemPct:     p.mem,
+					MemRss:     p.rss,
+					MemVms:     p.vms,
+					CreateTime: p.start,
+					Username:   p.user,
 				})
-				for i := 0; i < 5 && i < len(procStats); i++ {
-					p := &procStats[i]
-					m.TopMemProcs = append(m.TopMemProcs, &sensorpb.MetricFrame_ProcessInfo{
-						Pid:        p.proc.Pid,
-						Name:       p.name,
-						CpuPct:     p.cpuPct,
-						MemPct:     p.memPct,
-						MemRss:     p.memRss,
-						MemVms:     p.memVms,
-						CreateTime: p.created,
-						Username:   p.user,
-					})
-				}
-
-				// Count threads
-				threadCount := 0
-				for _, p := range procs {
-					if threads, err := p.NumThreads(); err == nil {
-						threadCount += int(threads)
-					}
-				}
-				m.ThreadCount = uint32(threadCount)
 			}
 
 			// Memory

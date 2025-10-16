@@ -111,7 +111,7 @@ func setDefaults(v *viper.Viper) {
 	// Agent defaults
 	v.SetDefault("agent.node_id", getHostname())
 	v.SetDefault("agent.topic", "sensor.node.metrics")
-	v.SetDefault("agent.sample_period", "30s")
+	v.SetDefault("agent.sample_period", "5s")
 
 	// Detector defaults
 	v.SetDefault("detector.sub_name", "sensorium-detector")
@@ -191,6 +191,10 @@ func (c *Config) Validate() error {
 
 	if c.PulsarURL == "" {
 		return fmt.Errorf("pulsar URL is required")
+	}
+
+	if c.Agent.SamplePeriod < (2 * time.Second) {
+		return fmt.Errorf("agent sampling interval min is 2 seconds")
 	}
 
 	return nil
