@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"sensorium/internal/config"
@@ -21,6 +22,7 @@ import (
 	"github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/shirou/gopsutil/v4/sensors"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -75,14 +77,17 @@ func sampleCPU(ctx context.Context) (*cpuSample, error) {
 	return &cpuSample{total: total, procs: ps, threadCount: threadCt, at: time.Now()}, nil
 }
 
-func diffAndRank(prev, curr *cpuSample, topN int) ([]procCPU, error) {
+func diffAndRank(ctx context.Context, prev, curr *cpuSample, topN int) ([]procCPU, error) {
 	totalDelta := curr.total - prev.total
 	if totalDelta <= 0 {
 		return nil, fmt.Errorf("invalid CPU delta")
 	}
 
 	numCPU, _ := cpu.Counts(true)
+	var mu sync.Mutex
 	results := make([]procCPU, 0, len(curr.procs))
+	g, _ := errgroup.WithContext(ctx)
+	g.SetLimit(runtime.NumCPU() / 2) // Using half cores as workers
 
 	for pid, curTime := range curr.procs {
 		prevTime, ok := prev.procs[pid]
@@ -99,26 +104,31 @@ func diffAndRank(prev, curr *cpuSample, topN int) ([]procCPU, error) {
 			continue
 		}
 
-		p, err := process.NewProcess(pid)
-		if err != nil {
-			continue
-		}
-		name, _ := p.Name()
-		memPct, _ := p.MemoryPercent()
-		memInfo, _ := p.MemoryInfo()
-		user, _ := p.Username()
-		start, _ := p.CreateTime()
+		g.Go(func() error {
+			p, err := process.NewProcess(pid)
+			if err != nil {
+				return nil
+			}
+			name, _ := p.Name()
+			memPct, _ := p.MemoryPercent()
+			memInfo, _ := p.MemoryInfo()
+			user, _ := p.Username()
+			start, _ := p.CreateTime()
 
-		results = append(results, procCPU{
-			pid: pid, name: name, cpu: usage,
-			mem: memPct, rss: memInfo.RSS, vms: memInfo.VMS,
-			user: user, start: start,
+			mu.Lock()
+			results = append(results, procCPU{
+				pid: pid, name: name, cpu: usage,
+				mem: memPct, rss: memInfo.RSS, vms: memInfo.VMS,
+				user: user, start: start,
+			})
+			mu.Unlock()
+			return nil
 		})
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].cpu > results[j].cpu
-	})
+	_ = g.Wait()
+
+	sort.Slice(results, func(i, j int) bool { return results[i].cpu > results[j].cpu })
 	if len(results) > topN {
 		results = results[:topN]
 	}
@@ -135,7 +145,7 @@ func GetTopProcesses(ctx context.Context, topN int) (cpuTop, memTop []procCPU, s
 		return nil, nil, nil, nil // no baseline yet
 	}
 
-	procs, err := diffAndRank(lastSample, curr, topN)
+	procs, err := diffAndRank(ctx, lastSample, curr, topN)
 	lastSample = curr
 	if err != nil {
 		return nil, nil, nil, err
