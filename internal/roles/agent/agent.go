@@ -63,17 +63,35 @@ func sampleCPU(ctx context.Context) (*cpuSample, error) {
 		return nil, err
 	}
 
-	threadCt := int32(0)
 	ps := make(map[int32]float64, len(procs))
+	var mu sync.Mutex
+	g, _ := errgroup.WithContext(ctx)
+	g.SetLimit(runtime.NumCPU() / 2) // Using half cores
+
 	for _, p := range procs {
-		t, err := p.TimesWithContext(ctx)
-		if err != nil {
-			continue
-		}
-		ps[p.Pid] = t.User + t.System
-		numThreads, _ := p.NumThreadsWithContext(ctx)
-		threadCt += numThreads
+		g.Go(func() error {
+			t, err := p.TimesWithContext(ctx)
+			if err != nil {
+				return nil // Skip on error
+			}
+			mu.Lock()
+			ps[p.Pid] = t.User + t.System
+			mu.Unlock()
+			return nil
+		})
 	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	// Fetch total threads
+	misc, err := load.MiscWithContext(ctx)
+	threadCt := int32(0)
+	if err == nil {
+		threadCt = int32(misc.ProcsTotal)
+	}
+
 	return &cpuSample{total: total, procs: ps, threadCount: threadCt, at: time.Now()}, nil
 }
 
@@ -87,7 +105,7 @@ func diffAndRank(ctx context.Context, prev, curr *cpuSample, topN int) ([]procCP
 	var mu sync.Mutex
 	results := make([]procCPU, 0, len(curr.procs))
 	g, _ := errgroup.WithContext(ctx)
-	g.SetLimit(runtime.NumCPU() / 2) // Using half cores as workers
+	g.SetLimit(runtime.NumCPU() / 2) // Using half cores
 
 	for pid, curTime := range curr.procs {
 		prevTime, ok := prev.procs[pid]
