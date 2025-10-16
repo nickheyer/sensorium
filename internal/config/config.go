@@ -111,7 +111,7 @@ func setDefaults(v *viper.Viper) {
 	// Agent defaults
 	v.SetDefault("agent.node_id", getHostname())
 	v.SetDefault("agent.topic", "sensor.node.metrics")
-	v.SetDefault("agent.sample_period", "5s")
+	v.SetDefault("agent.sample_period", "10s")
 
 	// Detector defaults
 	v.SetDefault("detector.sub_name", "sensorium-detector")

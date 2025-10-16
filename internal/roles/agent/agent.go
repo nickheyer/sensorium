@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"runtime"
 	"sort"
 	"strings"
@@ -66,7 +67,7 @@ func sampleCPU(ctx context.Context) (*cpuSample, error) {
 	ps := make(map[int32]float64, len(procs))
 	var mu sync.Mutex
 	g, _ := errgroup.WithContext(ctx)
-	g.SetLimit(runtime.NumCPU() / 2) // Using half cores
+	g.SetLimit(int(math.Min(float64(runtime.NumCPU()/2), 8)))
 
 	for _, p := range procs {
 		g.Go(func() error {
@@ -105,7 +106,7 @@ func diffAndRank(ctx context.Context, prev, curr *cpuSample, topN int) ([]procCP
 	var mu sync.Mutex
 	results := make([]procCPU, 0, len(curr.procs))
 	g, _ := errgroup.WithContext(ctx)
-	g.SetLimit(runtime.NumCPU() / 2) // Using half cores
+	g.SetLimit(int(math.Min(float64(runtime.NumCPU()/2), 8)))
 
 	for pid, curTime := range curr.procs {
 		prevTime, ok := prev.procs[pid]
