@@ -5,7 +5,7 @@
 
 # Generated pbs
 internal/proto/
-
+internal/**/embedded/
 
 # User-specific files
 *.rsuser

@@ -13,16 +13,27 @@ import (
 
 type Config struct {
 	// Global Configs
-	Roles     []string `mapstructure:"roles"`
-	PulsarURL string   `mapstructure:"pulsar_url"`
-	SubPrefix string   `mapstructure:"sub_prefix"`
-	LogLevel  string   `mapstructure:"log_level"`
+	Roles     []string  `mapstructure:"roles"`
+	PulsarURL string    `mapstructure:"pulsar_url"`
+	SubPrefix string    `mapstructure:"sub_prefix"`
+	LogLevel  string    `mapstructure:"log_level"`
+	TLS       TLSConfig `mapstructure:"tls"`
 
 	// Role Configs - these are getting passed to each role
 	Agent    AgentConfig    `mapstructure:"agent"`
 	Detector DetectorConfig `mapstructure:"detector"`
 	Alerter  AlerterConfig  `mapstructure:"alerter"`
 	UI       UIConfig       `mapstructure:"ui"`
+}
+
+type TLSConfig struct {
+	Enabled            bool   `mapstructure:"enabled"`
+	TrustCertsFilePath string `mapstructure:"trust_certs_file"`  // Broker CA ~ tls
+	CertFilePath       string `mapstructure:"cert_file"`         // Client cert ~ mtls
+	KeyFilePath        string `mapstructure:"key_file"`          // Client private key ~ mtls
+	AllowInsecureConn  bool   `mapstructure:"allow_insecure"`    // Skip verify
+	ServerName         string `mapstructure:"server_name"`       // Expected CN/SAN
+	ValidateHostname   bool   `mapstructure:"validate_hostname"` // SNI verify
 }
 
 type AgentConfig struct {
@@ -78,6 +89,15 @@ func setupFlags() {
 	pflag.Float32("detector.cpu-crit", 92.0, "CPU critical threshold")
 	pflag.Float32("detector.mem-warn", 0.90, "Memory warning threshold")
 	pflag.Float32("detector.mem-crit", 0.95, "Memory critical threshold")
+
+	// TLS
+	pflag.Bool("tls.enabled", false, "Enable TLS for Pulsar connections")
+	pflag.String("tls.trust-certs-file", "", "Path to CA certificate file")
+	pflag.String("tls.cert-file", "", "Path to client certificate file (for mTLS)")
+	pflag.String("tls.key-file", "", "Path to client private key file (for mTLS)")
+	pflag.Bool("tls.allow-insecure", false, "Allow insecure TLS connections (dev only)")
+	pflag.String("tls.server-name", "", "Expected server name in certificate")
+	pflag.Bool("tls.validate-hostname", true, "Validate server hostname")
 }
 
 func initViper() *viper.Viper {
@@ -133,6 +153,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ui.alerts_topic", "sensor.alerts")
 	v.SetDefault("ui.metrics_topic", "sensor.node.metrics")
 	v.SetDefault("ui.sub_prefix", "sensorium")
+
+	// TLS defaults
+	v.SetDefault("tls.enabled", false)
+	v.SetDefault("tls.trust_certs_file", "")
+	v.SetDefault("tls.cert_file", "")
+	v.SetDefault("tls.key_file", "")
+	v.SetDefault("tls.allow_insecure", false)
+	v.SetDefault("tls.server_name", "")
+	v.SetDefault("tls.validate_hostname", true)
 }
 
 func Load() (*Config, error) {

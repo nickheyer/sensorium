@@ -26,9 +26,15 @@ func main() {
 
 	log.Printf("Starting Sensorium with roles: %v", cfg.Roles)
 	log.Printf("Connecting to Pulsar at: %s", cfg.PulsarURL)
+	if cfg.TLS.Enabled {
+		log.Printf("TLS enabled")
+		if cfg.TLS.CertFilePath != "" {
+			log.Printf("Using mTLS with client cert")
+		}
+	}
 
-	// Create Pulsar client with better timeout settings
-	client, err := pulsarx.New(cfg.PulsarURL)
+	// Create Pulsar client
+	client, err := pulsarx.New(cfg.PulsarURL, &cfg.TLS)
 	if err != nil {
 		log.Fatalf("Failed to connect to Pulsar: %v", err)
 	}

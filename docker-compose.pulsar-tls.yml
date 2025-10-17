@@ -1,0 +1,47 @@
+services:
+  pulsar:
+    image: apachepulsar/pulsar:latest
+    command: sh -c "bin/apply-config-from-env.py conf/standalone.conf && exec bin/pulsar standalone"
+    ports:
+      - "6650:6650"   # non-TLS
+      - "6651:6651"   # TLS
+      - "8080:8080"   # admin/HTTP
+      - "8443:8081"   # admin/HTTPS
+    environment:
+      PULSAR_PREFIX_authenticationEnabled: "true"
+      PULSAR_PREFIX_authenticationProviders: "org.apache.pulsar.broker.authentication.AuthenticationProviderTls"
+      PULSAR_PREFIX_brokerClientTlsEnabled: "true"
+      PULSAR_PREFIX_brokerClientTrustCertsFilePath: "/pulsar/certs/ca.crt"
+      PULSAR_PREFIX_brokerClientAuthenticationPlugin: "org.apache.pulsar.client.impl.auth.AuthenticationTls"
+      PULSAR_PREFIX_brokerClientAuthenticationParameters: '{"tlsCertFile":"/pulsar/certs/client.crt","tlsKeyFile":"/pulsar/certs/client-pk8.key"}'
+      PULSAR_PREFIX_brokerServicePortTls: "6651"
+      PULSAR_PREFIX_webServicePortTls: "8081"
+      PULSAR_PREFIX_tlsTrustCertsFilePath: "/pulsar/certs/ca.crt"
+      PULSAR_PREFIX_tlsCertificateFilePath: "/pulsar/certs/broker.crt"
+      PULSAR_PREFIX_tlsKeyFilePath: "/pulsar/certs/broker-pk8.key"
+      PULSAR_PREFIX_tlsRequireTrustedClientCertOnConnect: "true"
+      PULSAR_PREFIX_tlsAllowInsecureConnection: "false"
+      PULSAR_PREFIX_tlsCertRefreshCheckDurationSec: "300"
+      PULSAR_PREFIX_webServiceUrl: "https://localhost:8081"
+      PULSAR_PREFIX_webServiceUrlTls: "https://localhost:8081"
+      PULSAR_PREFIX_pulsarWebServiceUrl: "https://localhost:8081"
+      PULSAR_PREFIX_functionWorkerWebServiceURL: "https://localhost:8081"
+      PULSAR_WORKER_pulsarWebServiceUrl: "https://localhost:8081"
+      PULSAR_WORKER_pulsarServiceUrl: "pulsar+ssl://localhost:6651"
+      PULSAR_PREFIX_brokerServiceUrl: "pulsar://localhost:6650"
+      PULSAR_PREFIX_brokerServiceUrlTls: "pulsar+ssl://localhost:6651"
+      PULSAR_PREFIX_functionsWorkerEnabled: "false"
+      PULSAR_PREFIX_superUserRoles: "sensorium-client"
+      PULSAR_PREFIX_authorizationEnabled: "true"
+      PULSAR_PREFIX_allowAutoTopicCreation: "true"
+      PULSAR_PREFIX_allowAutoTopicCreationType: "partitioned"
+      PULSAR_PREFIX_defaultNumPartitions: "1"
+      PULSAR_PREFIX_namespaceCreate: "true"
+    volumes:
+      # RUN MAKE BUILD OR MAKE CERTS FIRST
+      - ./internal/pki/embedded:/pulsar/certs:ro
+      - pulsar-data:/pulsar/data
+    restart: unless-stopped
+
+volumes:
+  pulsar-data:
