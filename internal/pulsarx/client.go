@@ -56,6 +56,7 @@ func New(url string, tlsConfig *config.TLSConfig) (pulsar.Client, error) {
 			}
 			customTLS.Certificates = []tls.Certificate{clientCert}
 			clientOptions.TLSConfig = customTLS
+			clientOptions.TLSValidateHostname = tlsConfig.ValidateHostname
 
 			// Also set up TLS authentication using the embedded certificates
 			// This is required for Pulsar to use the certificate for authentication, not just transport
