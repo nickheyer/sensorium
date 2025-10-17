@@ -31,7 +31,7 @@ certs: clean
 			-CAkey internal/pki/embedded/ca.key -out internal/pki/embedded/client.crt -CAcreateserial 2>/dev/null; \
 		openssl genrsa -out internal/pki/embedded/broker.key 2048 2>/dev/null; \
 		openssl pkcs8 -topk8 -nocrypt -in internal/pki/embedded/broker.key -out internal/pki/embedded/broker-pk8.key 2>/dev/null; \
-		echo "subjectAltName=DNS:localhost,DNS:pulsar,IP:127.0.0.1" > internal/pki/embedded/broker.ext; \
+		echo "subjectAltName=DNS:*,DNS:*.local,DNS:*.localdomain,DNS:localhost,DNS:pulsar" > internal/pki/embedded/broker.ext; \
 		openssl req -new -key internal/pki/embedded/broker.key -out internal/pki/embedded/broker.csr \
 			-subj "/C=US/O=Sensorium/CN=localhost" 2>/dev/null; \
 		openssl x509 -req -days 3650 -in internal/pki/embedded/broker.csr -CA internal/pki/embedded/ca.crt \
