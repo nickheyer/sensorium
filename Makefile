@@ -56,7 +56,7 @@ dev:
 		SENSORIUM_HTTP_ADDR=:8088 \
 		go run ./cmd'
 
-dev-tls: certs
+dev-tls:
 	@bash -c 'trap "echo \"\\nShutting down Pulsar...\"; docker compose -f docker-compose.pulsar-tls.yml down -v" EXIT INT TERM; \
 		docker compose -f docker-compose.pulsar-tls.yml up -d && \
 		sleep 3 && \
