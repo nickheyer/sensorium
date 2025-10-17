@@ -97,7 +97,7 @@ func setupFlags() {
 	pflag.String("tls.key-file", "", "Path to client private key file (for mTLS)")
 	pflag.Bool("tls.allow-insecure", false, "Allow insecure TLS connections (dev only)")
 	pflag.String("tls.server-name", "", "Expected server name in certificate")
-	pflag.Bool("tls.validate-hostname", true, "Validate server hostname")
+	pflag.Bool("tls.validate-hostname", false, "Validate server hostname")
 }
 
 func initViper() *viper.Viper {
@@ -161,7 +161,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tls.key_file", "")
 	v.SetDefault("tls.allow_insecure", false)
 	v.SetDefault("tls.server_name", "")
-	v.SetDefault("tls.validate_hostname", true)
+	v.SetDefault("tls.validate_hostname", false)
 }
 
 func Load() (*Config, error) {
